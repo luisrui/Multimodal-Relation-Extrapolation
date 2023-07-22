@@ -1,0 +1,9 @@
+/origin_data/
+/.vscode/
+/generative-models/WGAN/models/
+**/__pycache__
+**/data
+**/checkpoints
+**/release
+**/results
+*.ipynb
