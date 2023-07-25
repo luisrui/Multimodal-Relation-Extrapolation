@@ -7,7 +7,7 @@ from tqdm import tqdm, trange
 import h5py
 from PIL import Image
 
-dataset = "WN18"
+dataset = "FB15K-237"
 
 ### The file is for transfering the origin data format into HDF5 format
 base_dir = '../origin_data/' + dataset + "/"
@@ -18,7 +18,7 @@ def create_paired_hdf5(dataset, entity_image, entity_text):
     h5_str = h5py.special_dtype(vlen=str)
 
     min_length = min(entity_image.__len__(), entity_text.__len__())
-    h5_file = h5py.File(f'./{dataset}_paired.hdf5','w')
+    h5_file = h5py.File(f'{base_dir}/{dataset}_paired.hdf5','w')
     h5_file.create_dataset('jpg', (min_length, ), dtype=h5_bytes, chunks=True)
     h5_file.create_dataset('caption', (min_length, ), dtype=h5_str, chunks=True)
 
@@ -35,7 +35,7 @@ def create_unpaired_text_hdf5(dataset, entity_image, entity_text):
     h5_str = h5py.special_dtype(vlen=str)
 
     length = max(entity_image.__len__(), entity_text.__len__()) - min(entity_image.__len__(), entity_text.__len__())
-    h5_file = h5py.File(f'./{dataset}_unpaired_text.hdf5','w')
+    h5_file = h5py.File(f'{base_dir}/{dataset}_unpaired_text.hdf5','w')
     h5_file.create_dataset('text', (length, ), dtype=h5_str, chunks=True)
 
     i = 0
@@ -47,7 +47,7 @@ def create_unpaired_text_hdf5(dataset, entity_image, entity_text):
     h5_file.close()
     print("create_unpaired_text_hdf5 succeed!")
 
-with open(os.path.join(base_dir, "entity2text.txt"), 'r') as fin:
+with open(os.path.join(base_dir, "entity2textlong.txt"), 'r') as fin:
     entity_text = dict()
     for line in fin.readlines():
         if line[-1] == '\n':
@@ -58,7 +58,8 @@ with open(os.path.join(base_dir, "entity2text.txt"), 'r') as fin:
 
 entity_image = dict()
 for filename in tqdm(os.listdir(os.path.join(base_dir, "images"))):
-    entity = filename[1:]
+    #entity = filename[1:]
+    entity = '/' + filename.replace('.', '/')
     assert entity in entity_text.keys()
     images = list()
     for pic in os.listdir(os.path.join(base_dir, "images", filename)):
