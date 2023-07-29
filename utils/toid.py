@@ -1,9 +1,17 @@
-import os, re
+import os, re, json
 
-src_path = './data/OpenBG-IMG/'
+dataset = 'FB15K-237'
+
+'''
+    This file is for generating id for each entity and relation, and map the id to three aforehead
+    generated files(train.tsv, test.tsv, valid.tsv) if you have your own mapped ids with entities& 
+    relations, just map the three data file into ids
+''' 
+
+src_path = f'./data/{dataset}/'
 path = lambda x: os.path.join(src_path, x)
 file_list = ['train','valid','test']
-out = './data/OpenBG-IMG/'
+out = f'./data/{dataset}/'
 path2 = lambda x: os.path.join(out, x)
 
 all = []
@@ -36,7 +44,10 @@ def toid(data):
     for ii in data:
         L = []
         for aa in ii:
-            h,r,t = re.findall('(.+?)\t(.+?)\t(.+?)\n',aa)[0]
+            try:
+                h,r,t = re.findall('(.+?)\t(.+?)\t(.+?)\n',aa)[0]
+            except:
+                h,r,t = aa.split('\t')
             h_id, ent_num = update_ent(ent_num, h)
             t_id, ent_num = update_ent(ent_num, t)
             r_id, rel_num = update_rel(rel_num, r)
@@ -64,10 +75,34 @@ with open(path2('entity2id.txt'), 'w') as fp:
 with open(path2('relation2id.txt'), 'w') as fp:
     fp.writelines(rel2id)
 
-# with open(path2('t_ids.txt'), 'w') as fp:
-#     fp.writelines(t_ids)
+with open(path2('t_ids.txt'), 'w') as fp:
+    fp.writelines(t_ids)
+
+# with open(f"../origin_data/{dataset}/entity2ids.json", 'r') as fout:
+#     ent_id = json.load(fout)
+# with open(f"../origin_data/{dataset}/relation2ids.json", 'r') as fout:
+#     rel_id = json.load(fout)
+
+# all_id = []
+# for data in all:
+#     triple_id = []
+#     for triple in data:
+#         try:
+#             h,r,t = re.findall('(.+?)\t(.+?)\t(.+?)\n',triple)[0]
+#         except:
+#             h,r,t = triple.split('\t')
+#         triple_id.append([ent_id[h], rel_id[r], ent_id[t]])
+#     triple_id.insert(0, [len(triple_id)])
+#     all_id.append(triple_id)
+
+# for idx, file in enumerate(file_list):
+#     with open(path2(file+'2id.txt'), 'w') as fp:
+#         for triple in all_id[idx]:
+#             try:
+#                 fp.write(str(triple[0])+'\t'+str(triple[1])+'\t'+str(triple[2])+'\n')
+#             except:
+#                 fp.write(str(triple[0])+'\n')
 
 for idx, file in enumerate(file_list):
     with open(path2(file+'2id.txt'), 'w') as fp:
-        fp.writelines(all[idx])
-    
+        fp.writelines(all[idx])   

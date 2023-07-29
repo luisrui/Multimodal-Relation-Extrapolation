@@ -4,7 +4,9 @@ rig = {}
 rellef = {}
 relrig = {}
 
-src_path = './data/OpenBG-IMG/'
+dataset = 'FB15K-237'
+
+src_path = f'./data/{dataset}/'
 pathx = lambda x : os.path.join(src_path, x)
 triple = open(pathx("train2id.txt"), "r")
 valid = open(pathx("valid2id.txt"), "r")

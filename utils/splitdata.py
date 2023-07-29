@@ -1,15 +1,16 @@
 import os
 import random
 
+dataset = 'FB15K-237'
 
 if not os.path.exists('./data'):
     os.mkdir('./data/')
 
-if not os.path.exists('./data/OpenBG-IMG'):
-    os.mkdir('./data/OpenBG-IMG/')
+if not os.path.exists(f'./data/{dataset}'):
+    os.mkdir(f'./data/{dataset}/')
 
-src_path = '../data/OpenBG-IMG/'
-tgt_path = './data/OpenBG-IMG/'
+src_path = f'../origin_data/{dataset}/'
+tgt_path = f'./data/{dataset}/'
 
 random.seed(123)
 
@@ -33,12 +34,7 @@ with open(os.path.join(tgt_path, 'valid.tsv'), 'w') as fp:
 
 with open(os.path.join(src_path, 'test.tsv'), 'r') as fp:
     test_data = fp.readlines()
-    new_test = []
-    for line in test_data:
-        data = line[:-1].split('\t')
-        data.append('ent_000000')
-        data = '\t'.join(data)
-        new_test.append(data+'\n')
+    new_test = test_data
 
 with open(os.path.join(tgt_path, 'test.tsv'), 'w') as fp:
     fp.writelines(new_test)
