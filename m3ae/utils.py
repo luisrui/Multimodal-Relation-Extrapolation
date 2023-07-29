@@ -42,7 +42,7 @@ class WandBLogger(object):
         config.online = False
         config.prefix = "M3AE"
         config.project = "m3ae"
-        config.output_dir = "/tmp/m3ae"
+        config.output_dir = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/checkpoints"
         config.gcs_output_dir = ""
         config.random_delay = 0.0
         config.experiment_id = config_dict.placeholder(str)

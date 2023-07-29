@@ -9,6 +9,8 @@ from ml_collections import ConfigDict
 from ml_collections.config_dict import config_dict
 from functools import partial
 
+from io import BytesIO
+
 
 def mask_union(mask1, mask2):
     return jnp.logical_or(mask1 > 0, mask2 > 0).astype(jnp.float32)
@@ -484,11 +486,11 @@ class MaskedMultimodalAutoencoder(nn.Module):
             return 0.0
 
     def forward_representation(self, image, text, text_padding_mask, deterministic=False):
-        batch_size = image.shape[0]
-        cls_token = jnp.broadcast_to(self.cls_token, (batch_size, 1, self.config.emb_dim))
-        input_tensors = [cls_token]
-        padding_masks = [jnp.zeros((batch_size,  1), dtype=jnp.float32)]
         if image is not None:
+            batch_size = image.shape[0]
+            cls_token = jnp.broadcast_to(self.cls_token, (batch_size, 1, self.config.emb_dim))
+            input_tensors = [cls_token]
+            padding_masks = [jnp.zeros((batch_size,  1), dtype=jnp.float32)]
             image_x = (
                 self.image_embedding(image)
                 + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])

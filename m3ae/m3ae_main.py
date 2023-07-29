@@ -1,3 +1,5 @@
+import os
+import json
 import dataclasses
 import pprint
 from functools import partial
@@ -11,6 +13,8 @@ import numpy as np
 import optax
 import torch
 import wandb
+import pickle
+import einops
 
 from flax import linen as nn
 from flax.jax_utils import prefetch_to_device
@@ -27,14 +31,19 @@ from .model import (
     patch_mse_loss, M3AETrainState, mask_intersection, mask_not,
     mask_select, all_mask
 )
+from .model_pytorch import MaskedMultimodalAutoencoder_pytorch
+
 from .utils import (
     WandBLogger, define_flags_with_default, get_user_flags,
     image_float2int, load_pickle, set_random_seed, create_log_images
 )
 from .vqgan import get_image_tokenizer
 
+from ml_collections import ConfigDict
+from ml_collections.config_dict import config_dict
 
 FLAGS_DEF = define_flags_with_default(
+    dataset_name='',
     seed=42,
     epochs=200,
     batch_size=2,
@@ -48,17 +57,17 @@ FLAGS_DEF = define_flags_with_default(
     dataloader_shuffle=False,
     log_freq=50,
     plot_freq=1000,
-    save_model_freq=0,
+    save_model_freq=100,
     image_loss_weight=1.0,
     text_loss_weight=0.1,
-    unpaired_text_loss_weight=0.0,
+    unpaired_text_loss_weight=0.5,
     clip_gradient=1e9,
     lr_init_value=0.0,
     lr_end_value=0.0,
     lr_peak_value=1.5e-4,
     lr_warmup_epochs=0,
     weight_decay=0.05,
-    load_checkpoint="",
+    load_checkpoint="./m3ae/checkpoints/m3ae_small.pkl",
     m3ae=MaskedMultimodalAutoencoder.get_default_config(),
     data=ImageTextDataset.get_default_config(),
     unpaired_text_data=TextDataset.get_default_config(),
@@ -371,7 +380,7 @@ def main(argv):
 
     if FLAGS.accumulate_grad_steps > 1:
         accumulated_grads = flax.jax_utils.replicate(
-            jax.tree_map(jnp.zeros_like, flax.jax_utils.unreplicate(state).params),
+            jax.tree_util.tree_map(jnp.zeros_like, flax.jax_utils.unreplicate(state).params),
             jax_devices
         )
         accumulated_steps = flax.jax_utils.replicate(jnp.array(0, jnp.int32), jax_devices)
@@ -393,6 +402,9 @@ def main(argv):
             logger.log(log_metrics)
             tqdm.write("\n" + pprint.pformat(log_metrics) + "\n")
 
+        # if (epoch + 1) % 20 == 0:
+        #     with open(f'./m3ae/checkpoints/small_model_epoch_{epoch}.pkl', 'wb') as f:
+        #         pickle.dump(model, f)
         if FLAGS.plot_freq > 0 and step % FLAGS.plot_freq == 0:
             log_image = create_log_images(
                 jax.device_get(patch_predict_fn(state, sharded_rng, batch)),
@@ -420,8 +432,10 @@ def main(argv):
         }
         if jax_process_index == 0:
             logger.save_pickle(save_data, "model.pkl")
-
-
+    
+    # torch.save(model, f'{model.config.model_type}_model.pt')
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method("spawn")
     absl.app.run(main)
+    #absl.app.run(generate_embedding)
+    

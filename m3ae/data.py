@@ -22,7 +22,8 @@ class ImageTextDataset(torch.utils.data.Dataset):
     @staticmethod
     def get_default_config(updates=None):
         config = ConfigDict()
-        config.path = ""
+        config.dataset = ''
+        config.path = "./origin_data/FB15K-237/FB15K-237_paired.hdf5"
 
         config.start_index = 0
         config.max_length = int(1e9)
@@ -30,15 +31,15 @@ class ImageTextDataset(torch.utils.data.Dataset):
 
         config.image_only = False
         config.tokenize = True
-        config.tokenizer = "bert-base-uncased"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
         config.tokenizer_max_length = 64
 
         config.transform_type = "pretrain"
         config.image_size = 256
 
-        config.image_normalization = 'cc12m'
-        config.custom_image_mean = ''
-        config.custom_image_std = ''
+        config.image_normalization = 'imagenet'
+        config.custom_image_mean = [0.485, 0.456, 0.406]
+        config.custom_image_std = [0.229, 0.224, 0.225]
 
         config.random_drop_text = 0.0
         config.deterministic_drop_text = 0.0
@@ -405,14 +406,14 @@ class TextDataset(torch.utils.data.Dataset):
     @staticmethod
     def get_default_config(updates=None):
         config = ConfigDict()
-        config.path = ""
+        config.path = "./origin_data/FB15K-237/FB15K-237_unpaired_text.hdf5"
 
         config.start_index = 0
         config.max_length = int(1e9)
         config.random_start = True
 
         config.tokenize = True
-        config.tokenizer = "bert-base-uncased"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
         config.tokenizer_max_length = 256
 
         if updates is not None:
