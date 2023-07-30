@@ -1,4 +1,4 @@
-/origin_data/
+#/origin_data/
 /.vscode/
 /generative-models/WGAN/models/
 **/__pycache__
@@ -7,3 +7,9 @@
 **/release
 **/results
 *.ipynb
+**/images
+**/Embed_used
+*.npy
+*.npz
+*.hdf5
+*.zip
