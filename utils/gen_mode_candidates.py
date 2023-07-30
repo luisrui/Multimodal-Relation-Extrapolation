@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 import json
+import os
 
-rel2candidates = json.load(open("/media/omnisky/sdb/grade2020/cairui/Dawnet/origin_data/WN18/rel2candidates_all.json"))
-e1rel_e2 = json.load(open("/media/omnisky/sdb/grade2020/cairui/Dawnet/origin_data/WN18/e1rel_e2_all.json"))
+dataset = "FB15K-237"
+data_path = '../../origin_data/' + dataset
 
-relation2id = json.load(open("/media/omnisky/sdb/grade2020/cairui/Dawnet/origin_data/WN18/relation2ids.json"))
-entity2id = json.load(open("/media/omnisky/sdb/grade2020/cairui/Dawnet/origin_data/WN18/entity2ids.json"))
+rel2candidates = json.load(open(os.path.join(data_path,'rel2candidates_all.json')))
+e1rel_e2 = json.load(open(os.path.join(data_path, 'e1rel_e2_all.json')))
 
-dataset = "WN18"
+relation2id = json.load(open(os.path.join(data_path, 'relation2ids.json')))
+entity2id = json.load(open(os.path.join(data_path, 'entity2ids.json')))
+
+
 def gen_test_candidates(now_tasks, mode):
     test_candidates = dict()
     for query_ in now_tasks.keys():
@@ -31,13 +35,12 @@ def gen_test_candidates(now_tasks, mode):
 
             test_candidates[query_][str(head)+'\t'+str(rela)+'\t'+str(true)] = tail_candidates
 
-    json.dump(test_candidates, open("./origin_data/"+dataset+"/" + mode + "_candidates.json", "w"))
+    json.dump(test_candidates, open(data_path + "/" + mode + "_candidates.json", "w"))
     print("Finish", mode, "candidates!!")
-    return test_candidates
 
 if __name__ == '__main__':
     #dev_tasks = json.load(open("./origin_data/" + dataset + "/dev_tasks.json"))
-    test_tasks = json.load(open("./origin_data/" + dataset + "/test_tasks.json"))
+    test_tasks = json.load(open(data_path + "/test_tasks.json"))
     #train_tasks = json.load(open("./origin_data/" + dataset + "/train_tasks.json"))
 
     #gen_test_candidates(dev_tasks, 'dev')
