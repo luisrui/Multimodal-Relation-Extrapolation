@@ -1,0 +1,237 @@
+/base/popstra/celebrity/dated./base/popstra/dated/participant	Participants in a dated event mentioned in a pop culture magazine
+/award/award_category/nominees./award/award_nomination/nominated_for	Works nominated for an award in a particular category
+/music/genre/artists	Artists associated with a music genre
+/award/award_winner/awards_won./award/award_honor/award_winner	Awards won by an award winner
+/award/award_nominee/award_nominations./award/award_nomination/award_nominee	Nominees for an award
+/music/performance_role/regular_performances./music/group_membership/role	Role of a performance role in a group's regular performances
+/film/actor/film./film/performance/film	The films an actor has acted in.
+/military/military_conflict/combatants./military/military_combatant_group/combatants	Combatants involved in a military conflict
+/tv/tv_program/genre	Genre of a TV program
+/people/person/nationality	Nationality of a person
+/award/award_nominee/award_nominations./award/award_nomination/award	Award for which a person or work is nominated
+/sports/professional_sports_team/draft_picks./sports/sports_league_draft_pick/draft	Drafts to which a professional sports team pick belongs
+/base/schemastaging/person_extra/net_worth./measurement_unit/dated_money_value/currency	The currency in which a person's net worth is measured.
+/celebrities/celebrity/celebrity_friends./celebrities/friendship/friend	Friends of a celebrity
+/film/film/genre	Genre of a film
+/people/person/employment_history./business/employment_tenure/company	Employment history of a person and the companies they worked for
+/people/person/spouse_s./people/marriage/type_of_union	Spouses of a person in a particular type of union
+/film/film_subject/films	Films related to a particular film subject
+/film/film/release_date_s./film/film_regional_release_date/film_release_region	Regional release date of a film in a particular region
+/location/hud_foreclosure_area/estimated_number_of_mortgages./measurement_unit/dated_integer/source	Estimated number of mortgages in a HUD foreclosure area
+/base/aareas/schema/administrative_area/administrative_parent	Administrative parent of an administrative area
+/education/educational_institution/students_graduates./education/education/major_field_of_study	Students or graduates of an educational institution who majored in a particular field of study
+/education/educational_degree/people_with_this_degree./education/education/institution	Educational degree and the educational institution where people obtained it
+/people/person/profession	The profession of a person.
+/music/instrument/instrumentalists	Musicians who play a particular instrument
+/location/location/adjoin_s./location/adjoining_relationship/adjoins	Administrative area that adjoins another location
+/sports/sports_position/players./sports/sports_team_roster/team	Sports team roster and the players' positions on the team
+/education/educational_institution_campus/educational_institution	Educational institutions that have a campus
+/people/person/places_lived./people/place_lived/location	Locations where a person has lived
+/sports/sports_team/colors	The colors of a sports team.
+/film/film/country	Country where a film was produced
+/organization/organization_member/member_of./organization/organization_membership/organization	The organization to which a member belongs.
+/film/film/featured_film_locations	Featured locations in a film
+/film/film/produced_by	Production company that produced a film
+/film/film_distributor/films_distributed./film/film_film_distributor_relationship/film	Films distributed by a film distributor
+/film/film/other_crew./film/film_crew_gig/film_crew_role	Film crew role of a crewmember for a film
+/award/ranked_item/appears_in_ranked_lists./award/ranking/list	Appears in ranked lists of awards/rankings
+/award/award_category/winners./award/award_honor/ceremony	Winners of an award category at a particular award ceremony
+/music/genre/parent_genre	Parent genre of a music genre
+/film/film/estimated_budget./measurement_unit/dated_money_value/currency	Estimated budget of a film in a particular currency
+/common/topic/webpage./common/webpage/category	The category of a webpage.
+/award/award_winning_work/awards_won./award/award_honor/honored_for	Awards won by an award-winning work for which it was honored
+/award/award_nominee/award_nominations./award/award_nomination/nominated_for	The award(s) for which a nominee has been nominated.
+/base/petbreeds/city_with_dogs/top_breeds./base/petbreeds/dog_city_relationship/dog_breed	Top dog breeds in a city with a lot of dogs
+/olympics/olympic_games/sports	Sports played in the Olympic Games
+/influence/influence_node/influenced_by	Influence nodes that were influenced by a particular entity
+/location/statistical_region/gdp_nominal./measurement_unit/dated_money_value/currency	Gross Domestic Product of a statistical region in a particular currency
+/award/award_category/winners./award/award_honor/award_winner	The award winner(s) for a particular award category.
+/film/film/release_date_s./film/film_regional_release_date/film_release_distribution_medium	Distribution medium for a regional release of a film
+/education/educational_institution/colors	Colors associated with an educational institution
+/music/performance_role/track_performances./music/track_contribution/role	Roles of a performance role in track performances on a music recording
+/soccer/football_team/current_roster./sports/sports_team_roster/position	Position played by a player on a sports team
+/sports/pro_athlete/teams./sports/sports_team_roster/team	Sports teams for which a professional athlete has played
+/education/educational_institution/campuses	The campuses associated with an educational institution.
+/film/film/executive_produced_by	Executive producer of a film
+/film/film/cinematography	Cinematographer of a film
+/tv/tv_program/languages	The languages in which a TV program is available.
+/people/ethnicity/people	People who are members of a particular ethnicity
+/education/educational_institution/students_graduates./education/education/student	Students or graduates of an educational institution
+/film/director/film	Films directed by a film director
+/music/group_member/membership./music/group_membership/group	Members of a music group and the group they belong to
+/organization/role/leaders./organization/leadership/organization	Organization led by a person in a particular role
+/location/location/contains	Locations contained within a location
+/government/legislative_session/members./government/government_position_held/district_represented	Members of a legislative session representing a particular district
+/tv/tv_program/regular_cast./tv/regular_tv_appearance/actor	Actor who is a regular cast member of a TV program
+/film/film/language	Language of a film
+/music/group_member/membership./music/group_membership/role	Role of a member in a music group
+/olympics/olympic_sport/athletes./olympics/olympic_athlete_affiliation/country	Athletes who competed in a particular Olympic sport for a particular country at the Olympics
+/education/educational_degree/people_with_this_degree./education/education/major_field_of_study	The major field of study for people who have obtained a particular educational degree.
+/film/film/film_festivals	Film festivals in which a film was featured
+/organization/organization/headquarters./location/mailing_address/citytown	The city/town associated with the mailing address of an organization's headquarters.
+/music/artist/track_contributions./music/track_contribution/role	Role of an artist in a track
+/award/award_winning_work/awards_won./award/award_honor/award_winner	Awards won by an award-winning work
+/education/university/domestic_tuition./measurement_unit/dated_money_value/currency	Local tuition cost of attending a university in a particular currency
+/olympics/olympic_games/participating_countries	Countries that participated in the Olympic Games
+/people/cause_of_death/people	People who died from a particular cause
+/people/person/gender	Gender of a person
+/location/statistical_region/religions./location/religion_percentage/religion	Percentage of a location's population that practices a particular religion
+/sports/professional_sports_team/draft_picks./sports/sports_league_draft_pick/school	School that a sports league draft pick attended
+/people/marriage_union_type/unions_of_this_type./people/marriage/location_of_ceremony	Location of a marriage ceremony of a particular type
+/location/country/capital	Capital city of a country
+/soccer/football_player/current_team./sports/sports_team_roster/team	Sports team that a football player is currently playing for
+/award/award_winning_work/awards_won./award/award_honor/award	The award(s) won by a particular work.
+/film/film/production_companies	Production companies that produced a film
+/business/business_operation/assets./measurement_unit/dated_money_value/currency	The currency in which a business's assets are measured.
+/award/award_category/category_of	Category of an award category
+/media_common/netflix_genre/titles	Titles in a Netflix genre
+/music/performance_role/guest_performances./music/recording_contribution/performance_role	Roles of a performance role in guest performances on recordings
+/film/film/film_production_design_by	The film production designer(s) for a film.
+/people/person/place_of_birth	The place of birth of a person.
+/olympics/olympic_participating_country/medals_won./olympics/olympic_medal_honor/olympics	Olympic Games in which a country won medals
+/olympics/olympic_participating_country/athletes./olympics/olympic_athlete_affiliation/olympics	Athletes who competed for a particular Olympic participating country at the Olympics
+/food/food/nutrients./food/nutrition_fact/nutrient	The nutrient content of a particular food item.
+/award/award_ceremony/awards_presented./award/award_honor/award_winner	Award winners at an award ceremony
+/education/educational_degree/people_with_this_degree./education/education/student	The student(s) who have obtained a particular educational degree.
+/tv/tv_program/tv_producer./tv/tv_producer_term/producer_type	TV producer of a TV program
+/location/statistical_region/rent50_2./measurement_unit/dated_money_value/currency	Median rent for a statistical region in a particular currency
+/film/film/story_by	Writer of the story on which a film is based
+/base/biblioness/bibs_location/country	Countries where a bibliographic location is located
+/music/record_label/artist	Artists signed to a record label
+/organization/organization/headquarters./location/mailing_address/state_province_region	The state/province/region associated with the mailing address of an organization's headquarters.
+/government/government_office_category/officeholders./government/government_position_held/jurisdiction_of_office	Officeholders of a government office category in a particular jurisdiction
+/base/culturalevent/event/entity_involved	Entities involved in a cultural event
+/celebrities/celebrity/sexual_relationships./celebrities/romantic_relationship/celebrity	Romantic relationships involving a celebrity
+/sports/sports_league_draft/picks./sports/sports_league_draft_pick/school	School attended by a player selected in a sports league draft
+/education/university/fraternities_and_sororities	Has certain fraternities and sororities as a university
+/film/actor/film./film/performance/special_performance_type	Special performance type of an actor in a film
+/people/person/languages	The languages spoken by a person.
+/people/person/religion	Religion of a person
+/music/artist/origin	The place of origin of a music artist.
+/soccer/football_team/current_roster./soccer/football_roster_position/position	The position played by each player in a soccer/football team's current roster.
+/location/location/time_zones	Time zones of a location
+/tv/tv_writer/tv_programs./tv/tv_program_writer_relationship/tv_program	TV programs written by a TV writer
+/base/aareas/schema/administrative_area/administrative_area_type	Administrative area type of an administrative area
+/music/performance_role/regular_performances./music/group_membership/group	Groups that a performance role has made regular performances with
+/film/film/music	The music featured in a film.
+/film/film/dubbing_performances./film/dubbing_performance/actor	Actors who performed dubbing in a film
+/base/schemastaging/organization_extra/phone_number./base/schemastaging/phone_sandbox/service_location	Phone number of an organization's service location
+/people/person/spouse_s./people/marriage/location_of_ceremony	Location of a marriage ceremony of a person's spouse
+/location/country/second_level_divisions	The second-level divisions in a country.
+/business/job_title/people_with_this_title./business/employment_tenure/company	The company where a person with a particular job title is employed.
+/travel/travel_destination/climate./travel/travel_destination_monthly_climate/month	Month associated with the climate of a travel destination
+/language/human_language/countries_spoken_in	Countries where a human language is spoken
+/organization/organization_founder/organizations_founded	Organizations founded by an organization founder
+/sports/sports_team/roster./baseball/baseball_roster_position/position	Positions of players on a sports team roster in baseball
+/influence/influence_node/peers./influence/peer_relationship/peers	Peers of an influence node
+/film/film/written_by	Writers of a film
+/base/marchmadness/ncaa_basketball_tournament/seeds./base/marchmadness/ncaa_tournament_seed/team	The seed of a team in the NCAA basketball tournament.
+/sports/sports_position/players./sports/sports_team_roster/position	Positions of players on a sports team roster
+/user/jg/default_domain/olympic_games/sports	Sports played at a particular Olympic Games
+/organization/non_profit_organization/registered_with./organization/non_profit_registration/registering_agency	Non-profit organization and the registering agency it is registered with
+/award/award_category/disciplines_or_subjects	Disciplines or subjects of an award category
+/award/award_nominated_work/award_nominations./award/award_nomination/nominated_for	Awards for which a work was nominated
+/base/biblioness/bibs_location/state	State where a location mentioned in a book is located
+/people/deceased_person/place_of_burial	Place where a deceased person is buried
+/organization/endowed_organization/endowment./measurement_unit/dated_money_value/currency	Endowment of an endowed organization in a particular currency
+/base/popstra/celebrity/friendship./base/popstra/friendship/participant	Participants in a friendship involving a celebrity
+/military/military_combatant/military_conflicts./military/military_combatant_group/combatants	Combatants in a military conflict involving a military combatant group
+/film/film/film_format	Format of a film
+/tv/tv_network/programs./tv/tv_network_duration/program	Duration of programs aired on a TV network
+/film/film/film_art_direction_by	Art director of a film
+/user/tsegaran/random/taxonomy_subject/entry./user/tsegaran/random/taxonomy_entry/taxonomy	The taxonomy of a subject.
+/location/us_county/county_seat	The location of a county seat in a particular US county.
+/government/legislative_session/members./government/government_position_held/legislative_sessions	The legislative sessions during which a government position was held.
+/education/field_of_study/students_majoring./education/education/major_field_of_study	The major field of study for students majoring in a particular field.
+/time/event/locations	Locations of events
+/base/localfood/seasonal_month/produce_available./base/localfood/produce_availability/seasonal_months	Months when a particular produce is available in a region
+/sports/sports_team_location/teams	Sports teams located in a location
+/sports/sports_team/roster./american_football/football_roster_position/position	Position played by a player on a football team roster
+/business/business_operation/industry	Industry of a business operation
+/user/ktrueman/default_domain/international_organization/member_states	Member states of an international organization
+/base/schemastaging/organization_extra/phone_number./base/schemastaging/phone_sandbox/contact_category	The contact category for a phone number associated with an organization.
+/education/educational_institution/school_type	The type of school associated with an educational institution.
+/people/ethnicity/geographic_distribution	Geographic distribution of a particular ethnicity
+/location/statistical_region/gni_per_capita_in_ppp_dollars./measurement_unit/dated_money_value/currency	Gross National Income per capita of a statistical region in an adjusted currency
+/award/award_ceremony/awards_presented./award/award_honor/honored_for	The reason or work for which an award was presented at a particular award ceremony.
+/tv/tv_producer/programs_produced./tv/tv_producer_term/producer_type	TV programs produced by a TV producer during a particular producer term
+/location/country/form_of_government	The form of government in a country.
+/american_football/football_team/current_roster./sports/sports_team_roster/position	Positions of players on a football team's current roster
+/tv/tv_producer/programs_produced./tv/tv_producer_term/program	TV programs produced by a TV producer
+/base/popstra/celebrity/canoodled./base/popstra/canoodled/participant	Participants in a romantic relationship involving a celebrity
+/location/statistical_region/gdp_nominal_per_capita./measurement_unit/dated_money_value/currency	Gross Domestic Product per capita of a statistical region in a particular currency
+/location/hud_county_place/place	Places that are both a HUD county and a place
+/olympics/olympic_sport/athletes./olympics/olympic_athlete_affiliation/olympics	Athletes who competed in a particular Olympic sport at the Olympics
+/location/hud_county_place/county	The county associated with a HUD (US Department of Housing and Urban Development) county place.
+/user/alexander/philosophy/philosopher/interests	Interests of a philosopher
+/base/popstra/location/vacationers./base/popstra/vacation_choice/vacationer	Vacationers who made a particular vacation choice
+/medicine/disease/risk_factors	Risk factors associated with a disease
+/tv/tv_program/program_creator	The creator of a TV program.
+/sports/sports_team/roster./american_football/football_historical_roster_position/position_s	Positions of players on a sports team roster in American football historical rosters
+/sports/sports_league/teams./sports/sports_league_participation/team	Teams that participate in a sportsleague
+/people/deceased_person/place_of_death	The place where a deceased person passed away.
+/olympics/olympic_participating_country/medals_won./olympics/olympic_medal_honor/medal	The medal(s) won by a participating country in the Olympics.
+/film/film/edited_by	Editor of a film
+/people/person/sibling_s./people/sibling_relationship/sibling	Siblings of a person
+/sports/sports_team/sport	Sport played by a sports team
+/film/film/personal_appearances./film/personal_film_appearance/person	Persons who made personal appearances in a film
+/film/film/other_crew./film/film_crew_gig/crewmember	Crewmembers of a film
+/location/statistical_region/gdp_real./measurement_unit/adjusted_money_value/adjustment_currency	Real GDP of a statistical region in an adjusted currency
+/tv/tv_program/country_of_origin	The country of origin of a TV program.
+/education/university/local_tuition./measurement_unit/dated_money_value/currency	Local tuition cost of attending a university in a particular currency
+/organization/organization/place_founded	Place where an organization was founded
+/location/country/official_language	Official language of a country
+/ice_hockey/hockey_team/current_roster./sports/sports_team_roster/position	The position played by each player in an ice hockey team's current roster.
+/education/field_of_study/students_majoring./education/education/student	Students who majored in a particular field of study
+/people/person/spouse_s./people/marriage/spouse	Spouses of a person
+/medicine/disease/notable_people_with_this_condition	Notable people who have a particular medical condition
+/sports/sport/pro_athletes./sports/pro_sports_played/athlete	Professional athletes who play a particular sport
+/location/administrative_division/country	The country associated with an administrative division.
+/film/actor/dubbing_performances./film/dubbing_performance/language	Language in which a performer dubbed their lines in a film
+/time/event/instance_of_recurring_event	Instance of a recurring event in time
+/film/film/prequel	Prequel of a film
+/business/business_operation/revenue./measurement_unit/dated_money_value/currency	Revenue of a business operation in a particular currency
+/film/film/runtime./film/film_cut/film_release_region	Runtime of a film in a particular region
+/government/politician/government_positions_held./government/government_position_held/jurisdiction_of_office	Jurisdiction of office of a politician in a government position
+/film/film/costume_design_by	Costume designer of a film
+/location/statistical_region/places_exported_to./location/imports_and_exports/exported_to	Places exported to by a statistical region
+/government/politician/government_positions_held./government/government_position_held/legislative_sessions	Legislative sessions during which a politician held a government position
+/film/film/distributors./film/film_film_distributor_relationship/film_distribution_medium	The distribution medium(s) for a film's distributor.
+/base/saturdaynightlive/snl_cast_member/seasons./base/saturdaynightlive/snl_season_tenure/cast_members	SNL cast members who were on the show during a particular season
+/location/administrative_division/first_level_division_of	The parent division at a higher level of a lower-level administrative division.
+/film/film_set_designer/film_sets_designed	The film sets designed by a film set designer.
+/people/profession/specialization_of	Specializations of a profession
+/base/locations/continents/countries_within	Countries within a continent
+/education/university/international_tuition./measurement_unit/dated_money_value/currency	The currency in which international tuition fees are measured for a university.
+/music/instrument/family	Instrument family to which a musical instrument belongs
+/base/schemastaging/organization_extra/phone_number./base/schemastaging/phone_sandbox/service_language	The service language for a phone number associated with an organization.
+/film/film/distributors./film/film_film_distributor_relationship/region	Region where a film was distributed by a film distributor
+/base/popstra/celebrity/breakup./base/popstra/breakup/participant	Participants in a breakup involving a celebrity
+/music/artist/contribution./music/recording_contribution/performance_role	The performance role(s) of a music artist in a recording contribution.
+/base/americancomedy/celebrity_impressionist/celebrities_impersonated	Celebrities impersonated by a celebrity impressionist
+/organization/organization/child./organization/organization_relationship/child	Child organizations of an organization
+/broadcast/content/artist	Artist who created a broadcast content
+/tv/non_character_role/tv_regular_personal_appearances./tv/tv_regular_personal_appearance/person	People who have made non-character roles in TV programs
+/government/political_party/politicians_in_this_party./government/political_party_tenure/politician	The political party a politician belongs to and their tenure in that party.
+/government/governmental_body/members./government/government_position_held/legislative_sessions	Members of a governmental body during legislative sessions
+/location/capital_of_administrative_division/capital_of./location/administrative_division_capital_relationship/administrative_division	Administrative division that a location serves as the capital of
+/medicine/symptom/symptom_of	Symptoms of a medical condition
+/travel/travel_destination/how_to_get_here./travel/transportation/mode_of_transportation	Mode of transportation for getting to a travel destination
+/base/eating/practicer_of_diet/diet	Diet practiced by a person
+/business/business_operation/operating_income./measurement_unit/dated_money_value/currency	Operating income of a business operation in a particular currency
+/baseball/baseball_team/team_stats./baseball/baseball_team_stats/season	Team stats for a baseball team in a particular season
+/people/ethnicity/languages_spoken	Languages spoken by people of a particular ethnicity
+/organization/organization/headquarters./location/mailing_address/country	Country where an organization has its headquarters
+/film/special_film_performance_type/film_performance_type./film/performance/film	Film featuring a special film performance type
+/sports/sports_team/roster./basketball/basketball_roster_position/position	Positions of players on a basketball team's roster
+/tv/tv_personality/tv_regular_appearances./tv/tv_regular_personal_appearance/program	TV programs on which a TV personality made regular appearances
+/base/x2010fifaworldcupsouthafrica/world_cup_squad/current_world_cup_squad./base/x2010fifaworldcupsouthafrica/current_world_cup_squad/current_club	Current World Cup squad members of a particular World Cup squad and their current club affiliations
+/film/film/release_date_s./film/film_regional_release_date/film_regional_debut_venue	Regional debut venue for a film's regional release
+/base/aareas/schema/administrative_area/capital	Capital of an administrative area
+/dataworld/gardening_hint/split_to	The method of splitting a plant in gardening.
+/government/politician/government_positions_held./government/government_position_held/basic_title	Basic title of a government position held by a politician
+/sports/sports_position/players./american_football/football_historical_roster_position/position_s	Positions of players on a sports team roster in American football historical rosters
+/location/location/partially_contains	A larger geographical location that partially contains a smaller one.
+/award/hall_of_fame/inductees./award/hall_of_fame_induction/inductee	Inductees of a hall of fame
+/olympics/olympic_games/medals_awarded./olympics/olympic_medal_honor/medal	Medals awarded at the Olympics for a particular Olympic Games
+/film/person_or_entity_appearing_in_film/films./film/personal_film_appearance/type_of_appearance	Type of personal appearance made by a person or entity in a film
