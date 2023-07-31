@@ -9,7 +9,7 @@ from openke.data import TrainDataLoader, TestDataLoader
 
 import os
 
-dataset = "FB15K-237"
+dataset = "WN18"
 data_path = f"./data/{dataset}/"
 
 # dataloader for training
