@@ -13,3 +13,4 @@
 *.npz
 *.hdf5
 *.zip
+**/pretrained_models
