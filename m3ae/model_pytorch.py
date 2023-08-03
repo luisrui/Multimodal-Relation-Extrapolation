@@ -175,6 +175,26 @@ class Transformer(nn.Module):
         x = self.layer_norm(x)
         return x
 
+def index_sequence(x, ids):
+    return x[:, ids, ...]
+
+def random_masking(x, keep_len, padding_mask=None):
+    batch, length, dim = x.shape
+    torch.manual_seed(0)
+    noise = torch.rand((length,), dtype=torch.float32)
+    _, ids_shuffle = torch.sort(noise)
+    _, ids_restore = torch.sort(ids_shuffle)
+    kept = index_sequence(x, ids_shuffle[:keep_len])
+    mask = torch.ones([batch, length], dtype=torch.float32)
+    mask = mask.at[:, :keep_len].set(0.0)
+    mask = index_sequence(mask, ids_restore)
+
+    if padding_mask is None:
+        return kept, mask, ids_restore
+
+    padding_mask_kept = index_sequence(padding_mask, ids_shuffle[:keep_len])
+    return kept, mask, ids_restore, padding_mask_kept
+
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float32)
@@ -264,8 +284,8 @@ def get_transformer_by_config(model_type, config):
     else:
         raise ValueError('Unsupported model type!')
 
-# @title PyTorch MaskedMultimodalAutoencoder_pytorch
-class MaskedMultimodalAutoencoder_pytorch(nn.Module):
+# @title PyTorch PytorchMaskedMultimodalAutoencoder
+class PytorchMaskedMultimodalAutoencoder(nn.Module):
 
     @staticmethod
     def get_default_config(updates=None):
@@ -295,7 +315,7 @@ class MaskedMultimodalAutoencoder_pytorch(nn.Module):
         return config
 
     def __init__(self, text_vocab_size, config_updates=None):
-        super(MaskedMultimodalAutoencoder_pytorch, self).__init__()
+        super(PytorchMaskedMultimodalAutoencoder, self).__init__()
         self.text_vocab_size = text_vocab_size
         self.config = self.get_default_config(config_updates)
         assert self.text_vocab_size > 0
@@ -313,9 +333,21 @@ class MaskedMultimodalAutoencoder_pytorch(nn.Module):
             self.encoder_text_type_embedding = nn.Parameter(
                 torch.empty(1, 1, self.config.emb_dim).normal_(0.02)
             )
+            self.decoder_image_type_embedding = nn.Parameter(
+                torch.empty(1, 1, self.config.dec_emb_dim).normal_(0.02)
+            )
+            self.decoder_text_type_embedding = nn.Parameter(
+                torch.empty(1, 1, self.config.dec_emb_dim).normal_(0.02)
+            )
 
         self.cls_token = nn.Parameter(
             torch.empty(1, 1, self.config.emb_dim).normal_(0.02)
+        )
+        self.image_mask_embedding = nn.Parameter(
+            torch.empty(1, 1, self.config.dec_emb_dim).normal_(0.02)
+        )
+        self.text_mask_embedding = nn.Parameter(
+            torch.empty(1, 1, self.config.dec_emb_dim).normal_(0.02)
         )
 
         self.encoder = Transformer(
@@ -328,11 +360,40 @@ class MaskedMultimodalAutoencoder_pytorch(nn.Module):
             mlp_ratio=self.config.mlp_ratio,
         )
 
+        self.decoder = Transformer(
+            emb_dim=self.config.dec_emb_dim,
+            depth=self.config.dec_depth,
+            att_drop=self.config.att_drop,
+            drop=self.config.drop,
+            drop_path=self.config.drop_path,
+            num_heads=self.config.dec_num_heads,
+            mlp_ratio=self.config.mlp_ratio,
+        )
+
+        self.decoder_input_projection = nn.Linear(self.config.emb_dim, self.config.dec_emb_dim)
+        nn.init.xavier_uniform_(self.decoder_input_projection.weight)
+
+        self.decoder_image_output = MLP(
+            self.config.dec_emb_dim,
+            self.image_output_dim,
+            self.config.output_head_depth,
+            input_norm=self.config.output_head_depth > 0,
+        )
+
+        self.decoder_text_output = MLP(
+            self.config.dec_emb_dim,
+            self.text_vocab_size,
+            self.config.output_head_depth,
+            input_norm=self.config.output_head_depth > 0,
+        )
+
     def get_type_embedding(self, name):
         if self.config.use_type_embedding:
             return {
                 'encoder_image_type_embedding': self.encoder_image_type_embedding,
                 'encoder_text_type_embedding': self.encoder_text_type_embedding,
+                'decoder_image_type_embedding': self.decoder_image_type_embedding,
+                'decoder_text_type_embedding': self.decoder_text_type_embedding,
             }[name]
         else:
             return 0.0
@@ -366,3 +427,159 @@ class MaskedMultimodalAutoencoder_pytorch(nn.Module):
         padding_mask = torch.cat(padding_masks, dim=1)
         x = self.encoder(x, deterministic, padding_mask)
         return x
+
+    def forward_encoder(self, image, text, text_padding_mask, deterministic=False):
+        if image is not None:
+            batch_size = image.shape[0]
+        else:
+            batch_size = text.shape[0]
+        cls_token = self.cls_token.expand(batch_size, 1, self.config.emb_dim)
+        input_tensors = [cls_token]
+        padding_masks = [torch.zeros((batch_size, 1), dtype=torch.float32)]
+        if image is not None:
+            image_keep_length = int(
+                image.shape[1] * (1.0 - self.config.image_mask_ratio)
+            )
+            image_x = (
+                self.image_embedding(image)
+                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])
+                + self.get_type_embedding('encoder_image_type_embedding')
+            )
+            image_x, image_mask, image_ids_restore = random_masking(
+                image_x, image_keep_length
+            )
+            input_tensors.append(image_x)
+            padding_masks.append(torch.zeros((batch_size, image_keep_length), dtype=torch.float32))
+        else:
+            image_mask = image_ids_restore = None
+        
+        if text is not None:
+            text_keep_length = int(
+                text.shape[1] * (1.0 - self.config.text_mask_ratio)
+            )
+            text_x = (
+                self.text_embedding(text)
+                + get_1d_sincos_pos_embed(self.config.emb_dim, text.shape[1])
+                + self.get_type_embedding('encoder_text_type_embedding')
+            )
+            text_x, text_mask, text_ids_restore, text_padding_mask = random_masking(
+                text_x,
+                text_keep_length,
+                text_padding_mask,
+            )
+            input_tensors.append(text_x)
+            padding_masks.append(text_padding_mask)
+        else:
+            text_mask = text_ids_restore = text_padding_mask = None
+        
+        x = torch.cat(input_tensors, dim=1)
+        padding_mask = torch.cat(padding_masks, axis=1)
+
+        x = self.encoder(x, deterministic, padding_mask)
+
+        cls_x = x[:, :1, :]
+        if image is None:
+            image_x = None
+            text_x = x[:, 1:, :]
+        elif text is None:
+            image_x = x[:, 1:, :]
+            text_x = None
+        else:
+            image_x = x[:, 1:image_keep_length + 1, :]
+            text_x = x[:, image_keep_length + 1:, :]
+
+        return cls_x, image_x, text_x, image_mask, text_mask, image_ids_restore, text_ids_restore
+    
+    def forward_decoder(
+        self,
+        cls_x,
+        image_x,
+        text_x,
+        image_ids_restore,
+        text_ids_restore,
+        text_padding_mask,
+        deterministic=False,                                                                                                                                                                                                   
+    ):
+        batch_size = cls_x.shape[0]
+        input_tensors = [self.decoder_input_projection(cls_x)]
+        padding_masks = [torch.zeros((batch_size,  1), dtype=torch.float32)]
+
+        if image_x is not None:
+            image_keep_length = int(
+                image_ids_restore.shape[0] * (1.0 - self.config.image_mask_ratio)
+            )
+            image_x = self.decoder_input_projection(image_x)
+            masked_image_x = self.image_mask_embedding.expand(
+                batch_size,
+                image_ids_restore.shape[0] - image_keep_length,
+                self.config.dec_emb_dim,
+            )
+            image_x = index_sequence(
+                torch.cat([image_x, masked_image_x], axis=1), image_ids_restore
+            )
+            image_x = (
+                image_x
+                + get_2d_sincos_pos_embed(self.config.dec_emb_dim, image_ids_restore.shape[0])
+                + self.get_type_embedding('decoder_image_type_embedding')
+            )
+            input_tensors.append(image_x)
+            padding_masks.append(torch.zeros((batch_size, image_ids_restore.shape[0]), dtype=torch.float32))
+
+        if text_x is not None:
+            text_keep_length = int(
+                text_ids_restore.shape[0] * (1.0 - self.config.text_mask_ratio)
+            )
+            text_x = self.decoder_input_projection(text_x)
+            masked_text_x = self.text_mask_embedding.expand(
+                batch_size,
+                text_ids_restore.shape[0] - text_keep_length,
+                self.config.dec_emb_dim,
+            )
+            text_x = index_sequence(
+                torch.cat([text_x, masked_text_x], axis=1), text_ids_restore
+            )
+            text_x = (
+                text_x
+                + get_1d_sincos_pos_embed(self.config.dec_emb_dim, text_ids_restore.shape[0])
+                + self.get_type_embedding('decoder_text_type_embedding')
+            )
+            input_tensors.append(text_x)
+            padding_masks.append(text_padding_mask)
+
+        x = torch.cat(input_tensors, axis=1)
+        padding_mask = torch.cat(padding_masks, axis=1)
+        x = self.decoder(x, deterministic, padding_mask)
+
+        cls_x = x[:, :1, :]
+        if image_x is None:
+            image_output = None
+            text_output = self.decoder_text_output(x[:, 1:, :])
+        elif text_x is None:
+            image_output = self.decoder_image_output(x[:, 1:, :])
+            text_output = None
+        else:
+            image_output = self.decoder_image_output(x[:, 1:image_ids_restore.shape[0] + 1, :])
+            text_output = self.decoder_text_output(x[:, image_ids_restore.shape[0] + 1:, :])
+
+        return image_output, text_output
+    
+    def __call__(self, image, text, text_padding_mask, deterministic=False):
+        (
+            cls_x,
+            image_x,
+            text_x,
+            image_mask,
+            text_mask,
+            image_ids_restore,
+            text_ids_restore,
+        ) = self.forward_encoder(image, text, text_padding_mask, deterministic)
+        image_output, text_output = self.forward_decoder(
+            cls_x,
+            image_x,
+            text_x,
+            image_ids_restore,
+            text_ids_restore,
+            text_padding_mask,
+            deterministic,
+        )
+        return image_output, text_output, image_mask, text_mask
