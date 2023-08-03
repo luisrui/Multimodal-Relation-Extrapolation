@@ -1,20 +1,31 @@
+import argparse
 import torch
 import os
+import json
 import re
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as F
+import torch.multiprocessing as mp
+import torch.distributed as dist
 import numpy as np
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from torch.utils import data
 from collections import Counter
+# from apex.parallel import DistributedDataParallel as DDP
+# from apex import amp
 import torch.optim as optim
 from tqdm import tqdm
 import ctypes
 import pickle
-from dataloader import TrainDataLoader, TestDataLoader
+from dataloader import TrainDataLoader
 
-RES = 'result.txt'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+dataset = 'FB15K-237'
+with open(f'../origin_data/{dataset}/M3AE_embed.pkl', 'rb') as fin:
+    m3ae_tokens = pickle.load(fin) 
 
 class Trainer(object):
 
@@ -56,6 +67,7 @@ class Trainer(object):
         return loss.item()
 
     def run(self):
+        
         if self.use_gpu:
             self.model.cuda()
 
@@ -299,10 +311,10 @@ class Tester(object):
         return acc, threshlod
 
 
-class IMG_Encoder(nn.Module):
-    def __init__(self, embedding_dim = 4096, dim = 200, margin = None, epsilon = None):
-        super(IMG_Encoder, self).__init__()
-        with open('./data/WN18/entity2id.txt') as fp:
+class Multimodal_Encoder(nn.Module):
+    def __init__(self, token_num = 320, token_emb_dim = 384, dim = 200, margin = None, epsilon = None):
+        super(Multimodal_Encoder, self).__init__()
+        with open(f'./data/{dataset}/entity2id.txt') as fp:
             entity2id = fp.readlines()[1:]
             entity2id = [i.split('\t')[0] for i in entity2id]
 
@@ -311,67 +323,80 @@ class IMG_Encoder(nn.Module):
         self.entity_count = len(entity2id)
         self.dim = dim
         self.margin = margin
-        self.embedding_dim = embedding_dim
+        self.token_num = token_num
+        self.token_emb_dim = token_emb_dim
         self.criterion = nn.MSELoss(reduction='mean') 
         self.raw_embedding = nn.Embedding(self.entity_count, self.dim)
 
-        self.visual_embedding = self._init_embedding()
+        self.multimodal_tokens = self._init_tokens()
+
+        # reduce the token number
+        # self.reduced_token_length = 64
+        # self.dim_reduce1 = torch.nn.Linear(token_num, token_num // 2)
+        # self.dim_reduce2 = torch.nn.Linear(token_num // 2, token_num // 4)
+        # self.dim_reduce3 = torch.nn.Linear(token_num // 4, self.reduced_token_length)
+        # self.dim_reduce_module = nn.Sequential(
+        #     self.dim_reduce1,
+        #     self.dim_reduce2,
+        #     self.dim_reduce3
+        # )
+        # self.reduced_dim = self.reduced_token_length * self.token_emb_dim 
+        self.dim_reduce = torch.nn.Linear(token_num, 1)
+        self.reduced_dim = token_emb_dim
 
         self.encoder = nn.Sequential(
-                torch.nn.Linear(embedding_dim, 1024),
+                torch.nn.Linear(self.reduced_dim, 4 * self.reduced_dim),
                 self.activation
             )
         
         self.encoder2 = nn.Sequential(
-                torch.nn.Linear(1024, self.dim),
+                torch.nn.Linear(4 * self.reduced_dim, self.dim),
                 self.activation
             )
 
         self.decoder2 = nn.Sequential(
-                torch.nn.Linear(self.dim, 1024),
+                torch.nn.Linear(self.dim, 4 * self.reduced_dim),
                 self.activation
             )
 
         self.decoder = nn.Sequential(
-                torch.nn.Linear(1024, embedding_dim),
+                torch.nn.Linear(4 * self.reduced_dim, self.reduced_dim),
                 self.activation
             )
 
-    def _init_embedding(self):
-        self.ent_embeddings = nn.Embedding(self.entity_count, self.embedding_dim)
-        for param in self.ent_embeddings.parameters():
-            param.requires_grad = False
-        nn.init.xavier_uniform_(self.ent_embeddings.weight.data)
-        weights = torch.empty(self.entity_count, self.embedding_dim)
-        embed = 0
+    def _init_tokens(self):
+        self.m3ae_ent_id = json.load(open(f'../origin_data/{dataset}/entity2ids_m3ae.json'))
+    
+        mm_tokens = []
+        mm_token_length = max([token.shape[1] for token in m3ae_tokens])
+        text_only_token_length = min([token.shape[1] for token in m3ae_tokens])
         for index, entity in tqdm(enumerate(self.entity2id)):
-            # print(index, entity)
-            try:
-                entity_ = entity.replace('/', '.')
-                
-                with open("./data/WN18/img_em/" + entity_ + "/avg_embedding.pkl", "rb") as visef:
-                    embed = embed+1
-                    em = pickle.load(visef)
-                    weights[index] = em
-                    
-            except:
-                # print(index, entity)
-                weights[index] = self.ent_embeddings(torch.LongTensor([index])).clone().detach()
-                continue
-        print(embed)
-        entities_emb = nn.Embedding.from_pretrained(weights)
+            m3ae_id = self.m3ae_ent_id[entity]
+            ent_tokens = torch.from_numpy(m3ae_tokens[m3ae_id]).clone()
 
-        return entities_emb
+            if ent_tokens.shape[1] == text_only_token_length: #padding for text only tokens
+                pad_tokens = torch.empty(1, mm_token_length-text_only_token_length, ent_tokens.shape[2])
+                nn.init.xavier_uniform_(pad_tokens)
+                ent_tokens = torch.cat([ent_tokens, pad_tokens], dim=1)
+
+            mm_tokens.append(ent_tokens.squeeze(0))
+        mm_tokens = torch.stack(mm_tokens)
+        return mm_tokens.to(device)
 
     def forward(self, entity_id):
-        v1 = self.visual_embedding(entity_id)
-        v2 = self.encoder(v1)
-
+        
+        mm_token = self.multimodal_tokens[entity_id] #[batch, 320, 384]
+        d1 = self.dim_reduce(mm_token.transpose(-2, -1))#[batch, 384, 1]
+        #print('d1', d1.shape)
+        # inp =self.dim_reduce_module(mm_token.transpose(1, 2))
+        inp = d1.view(d1.shape[0], -1)
+        #print('inp', inp.shape)
+        v2 = self.encoder(inp)
         v2_ = self.encoder2(v2)
+        
         v3_ = self.decoder2(v2_)
-
         v3 = self.decoder(v3_)
-        loss = self.criterion(v1, v3)
+        loss = self.criterion(inp, v3)
         return v2_, loss
 
 
@@ -388,30 +413,15 @@ class TransE(nn.Module):
 
         self.tail_embeddings = nn.Embedding(self.ent_tot, self.dim)
         self.rel_embeddings = nn.Embedding(self.rel_tot, self.dim)
-        self.ent_embeddings = IMG_Encoder(dim = self.dim, margin = self.margin, epsilon = self.epsilon)
+        self.ent_embeddings = Multimodal_Encoder(token_num = 320, token_emb_dim = 384, dim = 200, margin = self.margin, epsilon = self.epsilon)
 
-        if margin == None or epsilon == None:
-            nn.init.xavier_uniform_(self.tail_embeddings.weight.data)
-            nn.init.xavier_uniform_(self.rel_embeddings.weight.data)
-        else:
-            self.embedding_range = nn.Parameter(
-                torch.Tensor([(self.margin + self.epsilon) / self.dim]), requires_grad=False
-            )
-            nn.init.uniform_(
-                tensor = self.ent_embeddings.weight.data, 
-                a = -self.embedding_range.item(), 
-                b = self.embedding_range.item()
-            )
-            nn.init.uniform_(
-                tensor = self.rel_embeddings.weight.data, 
-                a= -self.embedding_range.item(), 
-                b= self.embedding_range.item()
-            )
+        nn.init.xavier_uniform_(self.tail_embeddings.weight.data)
+        nn.init.xavier_uniform_(self.rel_embeddings.weight.data)
 
         if not os.path.exists('./results'):
             os.mkdir('./results/')
-        with open(f'./results/{RES}','w') as _:
-            pass
+        # with open(f'./results/{RES}','w') as _:
+        #     pass
 
         if margin != None:
             self.margin = nn.Parameter(torch.Tensor([margin]))
@@ -488,113 +498,6 @@ class TransE(nn.Module):
     def save_checkpoint(self, path):
         torch.save(self.state_dict(), path)
 
-class TransE_raw(nn.Module):
-    def __init__(self, ent_tot, rel_tot, dim = 100, p_norm = 1, norm_flag = True, margin = None, epsilon = None):
-        super(TransE_raw, self).__init__()
-        self.ent_tot = ent_tot
-        self.rel_tot = rel_tot
-        self.dim = dim
-        self.margin = margin
-        self.epsilon = epsilon
-        self.norm_flag = norm_flag
-        self.p_norm = p_norm
-
-        self.ent_embeddings = nn.Embedding(self.ent_tot, self.dim)
-        self.rel_embeddings = nn.Embedding(self.rel_tot, self.dim)
-        # self.ent_embeddings = IMG_Encoder(dim = self.dim, margin = self.margin, epsilon = self.epsilon)
-
-        if margin == None or epsilon == None:
-            nn.init.xavier_uniform_(self.ent_embeddings.weight.data)
-            nn.init.xavier_uniform_(self.rel_embeddings.weight.data)
-        else:
-            self.embedding_range = nn.Parameter(
-                torch.Tensor([(self.margin + self.epsilon) / self.dim]), requires_grad=False
-            )
-            nn.init.uniform_(
-                tensor = self.ent_embeddings.weight.data, 
-                a = -self.embedding_range.item(), 
-                b = self.embedding_range.item()
-            )
-            nn.init.uniform_(
-                tensor = self.rel_embeddings.weight.data, 
-                a= -self.embedding_range.item(), 
-                b= self.embedding_range.item()
-            )
-
-        if margin != None:
-            self.margin = nn.Parameter(torch.Tensor([margin]))
-            self.margin.requires_grad = False
-            self.margin_flag = True
-        else:
-            self.margin_flag = False
-
-    def _calc(self, h, t, r, mode):
-        if self.norm_flag:
-            h = F.normalize(h, 2, -1)
-            r = F.normalize(r, 2, -1)
-            t = F.normalize(t, 2, -1)
-        if mode != 'normal':
-            h = h.view(-1, r.shape[0], h.shape[-1])
-            t = t.view(-1, r.shape[0], t.shape[-1])
-            r = r.view(-1, r.shape[0], r.shape[-1])
-        if mode == 'head_batch':
-            score = h + (r - t)
-        else:
-            score = (h + r) - t
-        score = torch.norm(score, self.p_norm, -1).flatten()
-        return score
-
-    def forward(self, data):
-        #self.ent_embeddings.encoder[0].weight.data.div_(self.ent_embeddings.encoder[0].weight.data.norm(p=2, dim=1, keepdim=True))
-        
-        batch_h = data['batch_h']
-        batch_t = data['batch_t']
-        batch_r = data['batch_r']
-        mode = data['mode']
-        # h, hloss = self.ent_embeddings(batch_h)
-        #t, tloss = self.ent_embeddings(batch_t)
-        h = self.ent_embeddings(batch_h)
-        t = self.ent_embeddings(batch_t)
-        r = self.rel_embeddings(batch_r)
-        score = self._calc(h ,t, r, mode)# + hloss + tloss
-        #score = self._calc(h ,t, r, mode)# + hloss + tloss
-        if self.margin_flag:
-            return self.margin - score
-        else:
-            return score
-
-    def regularization(self, data):
-        batch_h = data['batch_h']
-        batch_t = data['batch_t']
-        batch_r = data['batch_r']
-        h = self.ent_embeddings(batch_h)
-        t = self.ent_embeddings(batch_t)
-        r = self.rel_embeddings(batch_r)
-        regul = (torch.mean(h ** 2) + 
-                 torch.mean(t ** 2) + 
-                 torch.mean(r ** 2)) / 3
-        return regul
-
-    def predict(self, data):
-        score = self.forward(data)
-
-        if data['mode'] == 'tail_batch':
-            res = [str(i.item()) for i in torch.topk(score, k = 10, largest = False).indices]
-            with open('./results/{RES}','a+') as fp:
-                fp.write(f"{data['batch_h'][0]} {data['batch_r'][0]} {' '.join(res)}\n")
-
-        if self.margin_flag:
-            score = self.margin - score
-            return score.cpu().data.numpy()
-        else:
-            return score.cpu().data.numpy()
-
-    def load_checkpoint(self, path):
-        self.load_state_dict(torch.load(os.path.join(path)))
-        self.eval()
-
-    def save_checkpoint(self, path):
-        torch.save(self.state_dict(), path)
 
 class NegativeSampling(nn.Module):
 
@@ -626,57 +529,51 @@ class NegativeSampling(nn.Module):
         if self.l3_regul_rate != 0:
             loss_res += self.l3_regul_rate * self.model.l3_regularization()
         return loss_res
+    
+if __name__ == "__main__":
 
-data_path = "./data/WN18/"
+    data_path = f"./data/{dataset}/"
 
-train_dataloader = TrainDataLoader(
-    in_path = data_path, 
-    nbatches = 100,
-    threads = 8, 
-    sampling_mode = "normal", 
-    bern_flag = 1, 
-    filter_flag = 1, 
-    neg_ent = 25,
-    neg_rel = 25)
+    with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
+        ents_count = int(fp.readline()[:-1])
 
-# dataloader for test
-#test_dataloader = TestDataLoader(data_path, "link")
+    with open(os.path.join(data_path, 'relation2id.txt'), 'r') as fp:
+        rels_count = int(fp.readline()[:-1])
 
-with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
-    ents_count = int(fp.readline()[:-1])
+    transe = TransE(
+        ent_tot = ents_count,
+        rel_tot = rels_count,
+        dim = 200, 
+        p_norm = 1, 
+        norm_flag = True,
+    )
+    
+    train_dataloader = TrainDataLoader(
+        in_path = data_path, 
+        nbatches = 1000,
+        threads = 8, 
+        sampling_mode = "normal", 
+        bern_flag = 1, 
+        filter_flag = 1, 
+        neg_ent = 25,
+        neg_rel = 25
+    )
 
-with open(os.path.join(data_path, 'relation2id.txt'), 'r') as fp:
-    rels_count = int(fp.readline()[:-1])
+    model = NegativeSampling(
+            model = transe, 
+            loss = MarginLoss(margin = 5.0),
+            batch_size = train_dataloader.get_batch_size()
+        )
 
-# define the model
-transe = TransE(
-    ent_tot = ents_count,
-    rel_tot = rels_count,
-    dim = 200, 
-    p_norm = 1, 
-    norm_flag = True)
 
-# model = NegativeSampling(
-#     model = transe, 
-#     loss = MarginLoss(margin = 5.0),
-#     batch_size = train_dataloader.get_batch_size()
-# )
+    # dataloader for test
+    #test_dataloader = TestDataLoader(data_path, "link")
 
-if not os.path.exists('./checkpoints'):
-    os.mkdir('./checkpoints/')
+    if not os.path.exists('./checkpoints'):
+        os.mkdir('./checkpoints/')
 
-# # train the model
-# trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
-# trainer.run()
-# transe.save_checkpoint('./checkpoints/WN18.ckpt')
-
-transe.load_checkpoint('./checkpoints/WN18.ckpt')
-model = NegativeSampling(
-    model = transe, 
-    loss = MarginLoss(margin = 5.0),
-    batch_size = train_dataloader.get_batch_size()
-)
-trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 300, alpha = 0.3, use_gpu = True)
-trainer.run()
-transe.save_checkpoint('./checkpoints/WN18new.ckpt')
+    # train the model
+    trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
+    trainer.run()
+    transe.save_checkpoint(f'./checkpoints/{dataset}.ckpt')
 
