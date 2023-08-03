@@ -1,46 +1,25 @@
 import os
 import json
-import dataclasses
-import pprint
-from functools import partial
 
 import absl.app
 import absl.flags
-import flax
-import jax
-import jax.numpy as jnp
 import numpy as np
-import optax
 import torch
-import wandb
 import pickle
 import einops
 
-from flax import linen as nn
-from flax.jax_utils import prefetch_to_device
-from tqdm.auto import tqdm, trange
+from tqdm.auto import tqdm
 
 from .data import ImageTextDataset, TextDataset
-from .jax_utils import (
-    JaxRNG, get_metrics, next_rng, accumulated_gradient,
-    sync_state_across_devices
-)
+
 from .model import (
-    MaskedMultimodalAutoencoder, extract_patches,
-    merge_patches, cross_entropy_loss_and_accuracy,
-    patch_mse_loss, M3AETrainState, mask_intersection, mask_not,
-    mask_select, all_mask
+    MaskedMultimodalAutoencoder
 )
 from .model_pytorch import MaskedMultimodalAutoencoder_pytorch
 
 from .utils import (
-    WandBLogger, define_flags_with_default, get_user_flags,
-    image_float2int, load_pickle, set_random_seed, create_log_images
+    WandBLogger, define_flags_with_default, load_pickle
 )
-from .vqgan import get_image_tokenizer
-
-from ml_collections import ConfigDict
-from ml_collections.config_dict import config_dict
 
 FLAGS_DEF = define_flags_with_default(
     dataset_name='FB15K-237',

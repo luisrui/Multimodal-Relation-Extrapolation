@@ -7,7 +7,10 @@ from openke.module.loss import MarginLoss
 from openke.module.strategy import NegativeSampling
 from openke.data import TrainDataLoader, TestDataLoader
 
-data_path = "./data/OpenBG-IMG/"
+import os
+
+dataset = "WN18"
+data_path = f"./data/{dataset}/"
 
 # dataloader for training
 train_dataloader = TrainDataLoader(
@@ -21,7 +24,7 @@ train_dataloader = TrainDataLoader(
 	neg_rel = 0)
 
 # dataloader for test
-test_dataloader = TestDataLoader(data_path, "link")
+#test_dataloader = TestDataLoader(data_path, "link")
 
 # define the model
 transe = TransE(
@@ -31,6 +34,14 @@ transe = TransE(
 	p_norm = 1, 
 	norm_flag = True)
 
+#load the checkpoints
+checkpoint_path = f'./checkpoints/{dataset}.ckpt'
+if os.path.exists(checkpoint_path):
+	transe.load_checkpoint(checkpoint_path)
+
+if not os.path.exists('./checkpoints'):
+	os.mkdir('./checkpoints/')
+
 # define the loss function
 model = NegativeSampling(
 	model = transe, 
@@ -39,11 +50,11 @@ model = NegativeSampling(
 )
 
 #train the model
-trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
+trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 0.5, use_gpu = True)
 trainer.run()
-transe.save_checkpoint('./checkpoints/OpenBG-IMG.ckpt')
+transe.save_checkpoint(checkpoint_path)
 
-# test the model
-transe.load_checkpoint('./checkpoints/OpenBG-IMG.ckpt')
-tester = Tester(model = transe, data_loader = test_dataloader, use_gpu = True)
-tester.run_link_prediction(type_constrain = False)
+# # test the model
+# transe.load_checkpoint('./checkpoints/OpenBG-IMG.ckpt')
+# tester = Tester(model = transe, data_loader = test_dataloader, use_gpu = True)
+# tester.run_link_prediction(type_constrain = False)
