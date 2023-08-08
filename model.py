@@ -123,6 +123,10 @@ def get_transformer_by_config(model_type, config):
     else:
         raise ValueError('Unsupported model type!')
 
+
+def mask_intersection(mask1, mask2):
+    return torch.logical_and(mask1 > 0, mask2 > 0).to(torch.float32)
+
 def mask_not(mask):
     return 1.0 - mask
 
@@ -132,20 +136,31 @@ def all_mask(x):
 def cross_entropy_loss_and_accuracy(logits, tokens, valid=None):
     if valid is None:
         valid = all_mask(tokens)
+    device = logits.device
+    valid = valid.to(device)
     valid_text_length = torch.max(torch.sum(valid, dim=-1), torch.tensor(1e-5))
-
-    token_log_prob = jnp.squeeze
+    token_log_prob = torch.log_softmax(logits, dim=-1).squeeze().gather(-1, tokens.unsqueeze(-1).to(torch.int64)).squeeze()
+    token_log_prob = torch.where(valid > 0.0, token_log_prob, torch.tensor(0.0).to(device))
+    loss = -torch.mean(torch.sum(token_log_prob, dim=-1) / valid_text_length)
+    correct = torch.where(
+        valid > 0.0,
+        torch.argmax(logits, dim=-1) == tokens,
+        torch.tensor(False).to(device)
+    )
+    accuracy = torch.mean(torch.sum(correct, dim=-1) / valid_text_length)
+    return loss, accuracy
 
 def patch_mse_loss(patch_output, patch_target, valid=None):
     if valid is None:
         valid = all_mask(patch_target)
     valid_ratio = torch.sum(valid, dim=-1) / valid.shape[-1]
+    device = patch_output.device
     return torch.mean(
         torch.mean(
             torch.where(
                 valid > 0.0,
                 torch.mean(torch.square(patch_target - patch_output), dim=-1),
-                torch.tensor(0.0),
+                torch.tensor(0.0).to(device),
             ),
             dim=-1,
         ) / valid_ratio
@@ -193,10 +208,10 @@ class DropPath(nn.Module):
     def forward(self, input, deterministic=False):
         if deterministic:
             return input
-
+        device = input.device
         keep_prob = 1 - self.dropout_prob
         shape = (input.shape[0],) + (1,) * (input.ndim - 1)
-        random_tensor = keep_prob + torch.rand(shape, dtype=torch.float32)
+        random_tensor = keep_prob + torch.rand(shape, dtype=torch.float32).to(device)
         random_tensor = random_tensor.floor()
         return input.div(keep_prob) * random_tensor
 
@@ -245,12 +260,13 @@ class Attention(nn.Module):
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
+        device = inputs.device
         attention = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         if padding_mask is not None:
             padding_mask = padding_mask.unsqueeze(1).unsqueeze(1)
             padding_mask = padding_mask.expand(attention.shape)
-            attention = torch.where(padding_mask > 0, torch.tensor(-1e7), attention)
+            attention = torch.where(padding_mask > 0, torch.tensor(-1e7).to(device), attention)
 
         attention = F.softmax(attention, dim=-1)
         attention = self.att_drop_layer(attention)
@@ -429,6 +445,13 @@ class MaskedMultimodalAutoencoder(nn.Module):
             }[name]
         else:
             return 0.0
+    def get_model_device(self):
+        return next(self.parameters()).device
+    
+    def save(self, path=None):
+        if not path:
+            path = self.save_path
+        torch.save(self.state_dict(), path + "M3AE")
 
     def forward_representation(self, image, text, text_padding_mask, deterministic=False):
         input_tensors = []   
@@ -465,23 +488,25 @@ class MaskedMultimodalAutoencoder(nn.Module):
             batch_size = image.shape[0]
         else:
             batch_size = text.shape[0]
+        model_device = self.get_model_device()
         cls_token = self.cls_token.expand(batch_size, 1, self.config.emb_dim)
         input_tensors = [cls_token]
-        padding_masks = [torch.zeros((batch_size, 1), dtype=torch.float32)]
+        padding_masks = [torch.zeros((batch_size, 1), dtype=torch.float32, device=model_device)]
         if image is not None:
             image_keep_length = int(
                 image.shape[1] * (1.0 - self.config.image_mask_ratio)
             )
             image_x = (
                 self.image_embedding(image)
-                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])
+                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1]).to(model_device)
                 + self.get_type_embedding('encoder_image_type_embedding')
             )
             image_x, image_mask, image_ids_restore = random_masking(
                 image_x, image_keep_length
             )
-            input_tensors.append(image_x)
-            padding_masks.append(torch.zeros((batch_size, image_keep_length), dtype=torch.float32))
+            input_tensors.append(image_x.to(model_device))
+            padding_masks.append(torch.zeros((batch_size, image_keep_length), dtype=torch.float32, device=model_device))
+            image_mask = image_mask.to(model_device)
         else:
             image_mask = image_ids_restore = None
         
@@ -491,7 +516,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             )
             text_x = (
                 self.text_embedding(text)
-                + get_1d_sincos_pos_embed(self.config.emb_dim, text.shape[1])
+                + get_1d_sincos_pos_embed(self.config.emb_dim, text.shape[1]).to(model_device)
                 + self.get_type_embedding('encoder_text_type_embedding')
             )
             text_x, text_mask, text_ids_restore, text_padding_mask = random_masking(
@@ -499,14 +524,14 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 text_keep_length,
                 text_padding_mask,
             )
-            input_tensors.append(text_x)
-            padding_masks.append(text_padding_mask)
+            input_tensors.append(text_x.to(model_device))
+            padding_masks.append(text_padding_mask.to(model_device))
+            text_mask = text_mask.to(model_device)
         else:
             text_mask = text_ids_restore = text_padding_mask = None
         
         x = torch.cat(input_tensors, dim=1)
-        padding_mask = torch.cat(padding_masks, axis=1)
-
+        padding_mask = torch.cat(padding_masks, dim=1)
         x = self.encoder(x, deterministic, padding_mask)
 
         cls_x = x[:, :1, :]
@@ -532,9 +557,10 @@ class MaskedMultimodalAutoencoder(nn.Module):
         text_padding_mask,
         deterministic=False,                                                                                                                                                                                                   
     ):
+        model_device = self.get_model_device()
         batch_size = cls_x.shape[0]
         input_tensors = [self.decoder_input_projection(cls_x)]
-        padding_masks = [torch.zeros((batch_size,  1), dtype=torch.float32)]
+        padding_masks = [torch.zeros((batch_size,  1), dtype=torch.float32, device=model_device)]
 
         if image_x is not None:
             image_keep_length = int(
@@ -547,15 +573,15 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 self.config.dec_emb_dim,
             )
             image_x = index_sequence(
-                torch.cat([image_x, masked_image_x], axis=1), image_ids_restore
+                torch.cat([image_x, masked_image_x], dim=1), image_ids_restore
             )
             image_x = (
-                image_x
-                + get_2d_sincos_pos_embed(self.config.dec_emb_dim, image_ids_restore.shape[0])
+                image_x.to(model_device)
+                + get_2d_sincos_pos_embed(self.config.dec_emb_dim, image_ids_restore.shape[0]).to(model_device)
                 + self.get_type_embedding('decoder_image_type_embedding')
             )
             input_tensors.append(image_x)
-            padding_masks.append(torch.zeros((batch_size, image_ids_restore.shape[0]), dtype=torch.float32))
+            padding_masks.append(torch.zeros((batch_size, image_ids_restore.shape[0]), dtype=torch.float32, device=model_device))
 
         if text_x is not None:
             text_keep_length = int(
@@ -568,18 +594,18 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 self.config.dec_emb_dim,
             )
             text_x = index_sequence(
-                torch.cat([text_x, masked_text_x], axis=1), text_ids_restore
+                torch.cat([text_x, masked_text_x], dim=1), text_ids_restore
             )
             text_x = (
-                text_x
-                + get_1d_sincos_pos_embed(self.config.dec_emb_dim, text_ids_restore.shape[0])
+                text_x.to(model_device)
+                + get_1d_sincos_pos_embed(self.config.dec_emb_dim, text_ids_restore.shape[0]).to(model_device)
                 + self.get_type_embedding('decoder_text_type_embedding')
             )
             input_tensors.append(text_x)
-            padding_masks.append(text_padding_mask)
+            padding_masks.append(text_padding_mask.to(model_device))
 
-        x = torch.cat(input_tensors, axis=1)
-        padding_mask = torch.cat(padding_masks, axis=1)
+        x = torch.cat(input_tensors, dim=1)
+        padding_mask = torch.cat(padding_masks, dim=1)
         x = self.decoder(x, deterministic, padding_mask)
 
         cls_x = x[:, :1, :]
