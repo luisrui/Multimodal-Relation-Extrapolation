@@ -8,7 +8,7 @@ def read_options():
     parser.add_argument("--seed", default="0", type=int)
     # Multiprocessing info
     parser.add_argument('--nodes', default=1, type=int, metavar='N')
-    parser.add_argument('--gpus', default=1, type=int,
+    parser.add_argument('--gpus', default=8, type=int,
                         help='number of gpus per node')
     parser.add_argument('--nr', default=0, type=int,
                         help='ranking within the nodes')
@@ -17,7 +17,7 @@ def read_options():
     parser.add_argument('--image_mask_ratio', default='0.75', type=float)
     parser.add_argument('--text_mask_ratio', default='0.75', type=float)
     parser.add_argument('--load_checkpoint', default='', type=str)
-    parser.add_argument('--batch_size', default=32, type=int,
+    parser.add_argument('--batch_size', default=256, type=int,
                         help='ranking within the nodes')
     parser.add_argument('--m3ae_epochs', default=200, type=int)
     parser.add_argument('--dataloader_shuffle', default=False, type=bool, 
@@ -27,7 +27,7 @@ def read_options():
 
     parser.add_argument('--image_loss_weight', default=1.0, type=float)
     parser.add_argument('--text_loss_weight', default=1.0, type=float)
-    parser.add_argument('--unpaired_text_loss_weight', default=0.5, type=float)
+    parser.add_argument('--unpaired_text_loss_weight', default=1.0, type=float)
     parser.add_argument('--image_all_token_loss', default=False, type=bool)
     parser.add_argument('--text_all_token_loss', default=False, type=bool)
     
@@ -36,7 +36,7 @@ def read_options():
     parser.add_argument('--lr_minimum', default=0.0, type=float)
     parser.add_argument('--discretized_image', default=False, type=bool)
     # # Wgan Specification
-    # parser.add_argument("--embed_model", default="TransM3AE", type=str)
+    parser.add_argument("--embed_model", default="TransM3AE", type=str)
     # parser.add_argument("--prefix", default="intial", type=str)
 
     # # embedding dimension

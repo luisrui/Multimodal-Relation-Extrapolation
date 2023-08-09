@@ -1,6 +1,6 @@
 import json
 
-dataset = "WN18/"
+dataset = "FB15K-237/"
 
 with open('./origin_data/' + dataset + 'entity2id.txt', 'r') as f:
     entity2ids = dict()
