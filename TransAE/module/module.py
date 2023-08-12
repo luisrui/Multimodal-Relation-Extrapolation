@@ -18,14 +18,6 @@ from collections import Counter
 import torch.optim as optim
 from tqdm import tqdm
 import ctypes
-import pickle
-from dataloader import TrainDataLoader
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-dataset = 'FB15K-237'
-with open(f'../origin_data/{dataset}/M3AE_embed.pkl', 'rb') as fin:
-    m3ae_tokens = pickle.load(fin) 
 
 class Trainer(object):
 
@@ -310,13 +302,9 @@ class Tester(object):
 
         return acc, threshlod
 
-
 class Multimodal_Encoder(nn.Module):
-    def __init__(self, token_num = 320, token_emb_dim = 384, dim = 200, margin = None, epsilon = None):
+    def __init__(self, dataset, m3ae_token, device, entity2id, token_num = 320, token_emb_dim = 384, dim = 200, margin = None, epsilon = None):
         super(Multimodal_Encoder, self).__init__()
-        with open(f'./data/{dataset}/entity2id.txt') as fp:
-            entity2id = fp.readlines()[1:]
-            entity2id = [i.split('\t')[0] for i in entity2id]
 
         self.entity2id = entity2id
         self.activation = nn.ReLU()
@@ -326,21 +314,12 @@ class Multimodal_Encoder(nn.Module):
         self.token_num = token_num
         self.token_emb_dim = token_emb_dim
         self.criterion = nn.MSELoss(reduction='mean') 
-        self.raw_embedding = nn.Embedding(self.entity_count, self.dim)
+        self.m3ae_ent_id = json.load(open(f'./origin_data/{dataset}/entity2ids_m3ae.json'))
+        self.m3ae_tokens = m3ae_token
 
-        self.multimodal_tokens = self._init_tokens()
+        self.multimodal_tokens = self._init_tokens().to(device)
 
         # reduce the token number
-        # self.reduced_token_length = 64
-        # self.dim_reduce1 = torch.nn.Linear(token_num, token_num // 2)
-        # self.dim_reduce2 = torch.nn.Linear(token_num // 2, token_num // 4)
-        # self.dim_reduce3 = torch.nn.Linear(token_num // 4, self.reduced_token_length)
-        # self.dim_reduce_module = nn.Sequential(
-        #     self.dim_reduce1,
-        #     self.dim_reduce2,
-        #     self.dim_reduce3
-        # )
-        # self.reduced_dim = self.reduced_token_length * self.token_emb_dim 
         self.dim_reduce = torch.nn.Linear(token_num, 1)
         self.reduced_dim = token_emb_dim
 
@@ -365,14 +344,13 @@ class Multimodal_Encoder(nn.Module):
             )
 
     def _init_tokens(self):
-        self.m3ae_ent_id = json.load(open(f'../origin_data/{dataset}/entity2ids_m3ae.json'))
     
         mm_tokens = []
-        mm_token_length = max([token.shape[1] for token in m3ae_tokens])
-        text_only_token_length = min([token.shape[1] for token in m3ae_tokens])
+        mm_token_length = max([token.shape[1] for token in self.m3ae_tokens])
+        text_only_token_length = min([token.shape[1] for token in self.m3ae_tokens])
         for index, entity in tqdm(enumerate(self.entity2id)):
             m3ae_id = self.m3ae_ent_id[entity]
-            ent_tokens = torch.from_numpy(m3ae_tokens[m3ae_id]).clone()
+            ent_tokens = torch.from_numpy(self.m3ae_tokens[m3ae_id]).clone()
 
             if ent_tokens.shape[1] == text_only_token_length: #padding for text only tokens
                 pad_tokens = torch.empty(1, mm_token_length-text_only_token_length, ent_tokens.shape[2])
@@ -381,11 +359,12 @@ class Multimodal_Encoder(nn.Module):
 
             mm_tokens.append(ent_tokens.squeeze(0))
         mm_tokens = torch.stack(mm_tokens)
-        return mm_tokens.to(device)
+        return mm_tokens
 
     def forward(self, entity_id):
-        
+        #print('entity_id', entity_id.device)
         mm_token = self.multimodal_tokens[entity_id] #[batch, 320, 384]
+        #print('mm_token', mm_token.device)
         d1 = self.dim_reduce(mm_token.transpose(-2, -1))#[batch, 384, 1]
         #print('d1', d1.shape)
         # inp =self.dim_reduce_module(mm_token.transpose(1, 2))
@@ -399,9 +378,8 @@ class Multimodal_Encoder(nn.Module):
         loss = self.criterion(inp, v3)
         return v2_, loss
 
-
 class TransE(nn.Module):
-    def __init__(self, ent_tot, rel_tot, dim = 100, p_norm = 1, norm_flag = True, margin = None, epsilon = None):
+    def __init__(self, dataset_name, m3ae_token, device, ent_tot, rel_tot, ent_id, dim = 100, p_norm = 1, norm_flag = True, margin = None, epsilon = None):
         super(TransE, self).__init__()
         self.ent_tot = ent_tot
         self.rel_tot = rel_tot
@@ -413,7 +391,7 @@ class TransE(nn.Module):
 
         self.tail_embeddings = nn.Embedding(self.ent_tot, self.dim)
         self.rel_embeddings = nn.Embedding(self.rel_tot, self.dim)
-        self.ent_embeddings = Multimodal_Encoder(token_num = 320, token_emb_dim = 384, dim = 200, margin = self.margin, epsilon = self.epsilon)
+        self.ent_embeddings = Multimodal_Encoder(dataset_name, m3ae_token, device, entity2id=ent_id, token_num = 320, token_emb_dim = 384, dim = 200, margin = self.margin, epsilon = self.epsilon)
 
         nn.init.xavier_uniform_(self.tail_embeddings.weight.data)
         nn.init.xavier_uniform_(self.rel_embeddings.weight.data)
@@ -477,27 +455,12 @@ class TransE(nn.Module):
                  torch.mean(r ** 2)) / 3
         return regul
 
-    def predict(self, data):
-        score = self.forward(data)
-
-        if data['mode'] == 'tail_batch':
-            res = [str(i.item()) for i in torch.topk(score, k = 10, largest = False).indices]
-            with open(f'./results/{RES}','a+') as fp:
-                fp.write(f"{data['batch_h'][0]} {data['batch_r'][0]} {' '.join(res)}\n")
-        
-        if self.margin_flag:
-            score = self.margin - score
-            return score.cpu().data.numpy()
-        else:
-            return score.cpu().data.numpy()
-
     def load_checkpoint(self, path):
         self.load_state_dict(torch.load(os.path.join(path)))
         self.eval()
 
     def save_checkpoint(self, path):
         torch.save(self.state_dict(), path)
-
 
 class NegativeSampling(nn.Module):
 
@@ -529,51 +492,3 @@ class NegativeSampling(nn.Module):
         if self.l3_regul_rate != 0:
             loss_res += self.l3_regul_rate * self.model.l3_regularization()
         return loss_res
-    
-if __name__ == "__main__":
-
-    data_path = f"./data/{dataset}/"
-
-    with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
-        ents_count = int(fp.readline()[:-1])
-
-    with open(os.path.join(data_path, 'relation2id.txt'), 'r') as fp:
-        rels_count = int(fp.readline()[:-1])
-
-    transe = TransE(
-        ent_tot = ents_count,
-        rel_tot = rels_count,
-        dim = 200, 
-        p_norm = 1, 
-        norm_flag = True,
-    )
-    
-    train_dataloader = TrainDataLoader(
-        in_path = data_path, 
-        nbatches = 1000,
-        threads = 8, 
-        sampling_mode = "normal", 
-        bern_flag = 1, 
-        filter_flag = 1, 
-        neg_ent = 25,
-        neg_rel = 25
-    )
-
-    model = NegativeSampling(
-            model = transe, 
-            loss = MarginLoss(margin = 5.0),
-            batch_size = train_dataloader.get_batch_size()
-        )
-
-
-    # dataloader for test
-    #test_dataloader = TestDataLoader(data_path, "link")
-
-    if not os.path.exists('./checkpoints'):
-        os.mkdir('./checkpoints/')
-
-    # train the model
-    trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
-    trainer.run()
-    transe.save_checkpoint(f'./checkpoints/{dataset}.ckpt')
-
