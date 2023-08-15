@@ -1,14 +1,79 @@
 import torch 
 import torch.nn as nn
 from torch.nn import functional as F
-#!pip install ml_collections
+from torch_geometric.utils import batched_negative_sampling
+from torch_geometric.nn import RGCNConv
 from ml_collections import ConfigDict
 from ml_collections.config_dict import config_dict
-import pickle
-import einops 
-import pprint
-import transformers
+from tqdm import tqdm
 import numpy as np
+import os
+import json
+
+def first_fusion_train(model, batch : dict, args : dict):
+    image = batch['image']
+    text = batch['text']
+    text_padding_mask = batch['text_padding_mask']
+    unpaired_text = batch['unpaired_text']
+    unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
+    image_patches = extract_patches(image, args.patch_size)
+    # Forward Propogation
+    image_output, text_output, image_mask, text_mask = model(
+        image_patches,
+        text,
+        text_padding_mask,
+        deterministic=False,
+    )
+    _, unpaired_text_output, _, unpaired_text_mask = model(
+        None,
+        unpaired_text,
+        unpaired_text_padding_mask,
+        deterministic=False,
+    )
+    #Missing discretized image optimization
+    image_loss = patch_mse_loss(
+        image_output, image_patches,
+        None if args.image_all_token_loss else image_mask
+    )
+    image_accuracy = 0.0
+
+    text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
+        text_output, text,  
+        mask_intersection(
+            all_mask(text) if args.text_all_token_loss else text_mask,
+            mask_not(text_padding_mask)
+        )
+    )
+
+    unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
+        unpaired_text_output, unpaired_text,
+        mask_intersection(
+            all_mask(unpaired_text) if args.text_all_token_loss else unpaired_text_mask,
+            mask_not(unpaired_text_padding_mask)
+        )
+    )
+    loss = (
+        args.image_loss_weight * image_loss
+        + args.text_loss_weight * text_loss
+        + args.unpaired_text_loss_weight * unpaired_text_loss
+    )
+    average_text_length = torch.mean(torch.sum(mask_not(text_padding_mask), dim=-1))
+    average_unpaired_text_length = torch.mean(torch.sum(mask_not(unpaired_text_padding_mask), dim=-1))
+    info = dict(
+        image_loss=image_loss,
+        text_loss=text_loss,
+        loss=loss,
+        image_accuracy=image_accuracy,
+        text_accuracy=text_accuracy,
+        text_token_ratio=torch.mean(torch.sum(mask_not(text_padding_mask), dim=-1) / text_mask.shape[-1]),
+        average_text_length=average_text_length,
+    )
+    if args.unpaired_text_loss_weight > 0.0:
+        info['unpaired_text_loss'] = unpaired_text_loss
+        info['unpaired_text_accuracy'] = unpaired_text_accuracy
+        info['average_unpaired_text_length'] = average_unpaired_text_length
+    return loss, info
+
 
 def extract_patches(image, patch_size):
     batch, height, width, channels = image.shape
@@ -199,7 +264,6 @@ class MLP(nn.Module):
         x = self.output_layer(x)
         return x
 
-
 class DropPath(nn.Module):
     def __init__(self, dropout_prob=0.0):
         super(DropPath, self).__init__()
@@ -214,7 +278,6 @@ class DropPath(nn.Module):
         random_tensor = keep_prob + torch.rand(shape, dtype=torch.float32).to(device)
         random_tensor = random_tensor.floor()
         return input.div(keep_prob) * random_tensor
-
 
 class TransformerMLP(nn.Module):
     def __init__(self, dim=256, out_dim=256, dropout=0.0, kernel_init=None):
@@ -235,7 +298,6 @@ class TransformerMLP(nn.Module):
         x = self.fc2(x)
         x = self.dropout_layer(x)
         return x
-
 
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, use_bias=False, att_drop=0, proj_drop=0, kernel_init=None):
@@ -277,7 +339,6 @@ class Attention(nn.Module):
         x = self.proj_drop_layer(x)
         return x
 
-
 class Block(nn.Module):
     def __init__(self, emb_dim=256, num_heads=8, mlp_ratio=4, att_drop=0.0, drop=0.0, drop_path=0.0):
         super(Block, self).__init__()
@@ -305,7 +366,6 @@ class Block(nn.Module):
         x = self.transformer_mlp(x, deterministic)
         x = self.drop_path_layer2(x)
         return inputs + x
-
 
 class Transformer(nn.Module):
     def __init__(self, emb_dim=1024, depth=24, att_drop=0, drop=0, drop_path=0, num_heads=16, mlp_ratio=4):
@@ -642,34 +702,80 @@ class MaskedMultimodalAutoencoder(nn.Module):
         )
         return image_output, text_output, image_mask, text_mask
 
-if __name__ == '__main__':
-    from ml_collections import ConfigDict
-    from data import ImageTextDataset, TextDataset
-    dataset = ImageTextDataset(ImageTextDataset.get_default_config(), 0)
-    unpaired_text_dataset = TextDataset(TextDataset.get_default_config(), 0)
-    model = MaskedMultimodalAutoencoder(
-        text_vocab_size=dataset.vocab_size,
-        image_output_dim=16*16*3,
-        config_updates=ConfigDict(dict(model_type='small', image_mask_ratio=0.75, text_mask_ratio=0.75)),
-    )
-    paired_dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=256,
-        drop_last=True,
-        num_workers=8,
-        shuffle = True,
-        prefetch_factor=2,
-        persistent_workers=True,
-    )
-    for data in paired_dataloader:
-        image, text, text_padding_mask = data
-        break
-    image_patches = extract_patches(image, 16)
-    #unpaired_text, unpaired_text_padding_mask = unpaired_text_dataset[1]
-    image_output, text_output, image_mask, text_mask = model(
-        image_patches,
-        text,
-        text_padding_mask,
-        deterministic=False,
-    )
+class RGCNmodel(nn.Module):
+    def __init__(self, root, m3ae_tokens, hidden_channels, dim, num_relations, score_norm_flag):
+        super(RGCNmodel, self).__init__()
+        self.multimodal_tokens = self._init_tokens(m3ae_tokens, root)
+        self.num_relations = num_relations
+        _, self.token_num, self.reduced_dim = self.multimodal_tokens.shape 
+        self.dim = dim
+        self.score_norm_flag = score_norm_flag
+        self.rel_embedding = torch.nn.Embedding(self.num_relations, self.dim)
+
+        self.dim_reduce1 = torch.nn.Linear(self.token_num, 1)
+        # self.dim_reduce2 = nn.Sequential(
+        #         torch.nn.Linear(self.reduced_dim, self.dim),
+        #         self.activation
+        #     )
+        self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
+        self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
+
+    def _init_tokens(self, m3ae_tokens, root):
+        mm_tokens = []
+        mm_token_length = max([token.shape[1] for token in m3ae_tokens])
+        entity2id = json.load(open(os.path.join(root, 'entity2ids.json')))
+        m3ae_ent_id = json.load(open(os.path.join(root, 'entity2ids_m3ae.json')))
+        text_only_token_length = min([token.shape[1] for token in m3ae_tokens])
+        for _, entity in tqdm(enumerate(entity2id)):
+            m3ae_id = m3ae_ent_id[entity]
+            ent_tokens = torch.from_numpy(m3ae_tokens[m3ae_id]).clone()
+
+            if ent_tokens.shape[1] == text_only_token_length: #padding for text only tokens
+                pad_tokens = torch.empty(1, mm_token_length-text_only_token_length, ent_tokens.shape[2])
+                nn.init.xavier_uniform_(pad_tokens)
+                ent_tokens = torch.cat([ent_tokens, pad_tokens], dim=1)
+
+            mm_tokens.append(ent_tokens.squeeze(0))
+        mm_tokens = torch.stack(mm_tokens)
+        return mm_tokens
+
+    def forward_encoder(self, x, edge_index, edge_type):
+        x = self.dim_reduce1(x.transpose(-2, -1))
+        x = x.view(x.shape[0], -1)
+        #x = self.dim_reduce2(x)
+        x = self.conv1(x, edge_index, edge_type)
+        x = torch.relu(x)
+        x = self.conv2(x, edge_index, edge_type)
+        return x
     
+    def transe_scoring(self, x, edge_index, edge_type):
+        batch_head = x[edge_index[0]]
+        batch_tail = x[edge_index[1]]
+        batch_rel = self.rel_embedding(edge_type)
+        if self.score_norm_flag:
+            batch_head = F.normalize(batch_head, 2, -1)
+            batch_tail = F.normalize(batch_tail, 2, -1)
+            batch_rel = F.normalize(batch_rel, 2, -1)
+        score = (batch_head + batch_rel) - batch_tail
+        score = torch.norm(score, self.p_norm, -1).flatten()
+        return score
+        
+    def forward(self, x, edge_index, edge_type):
+        x_ecd = self.forward_encoder(x, edge_index, edge_type) 
+        score = self.transe_scoring(x_ecd, edge_index, edge_type)
+        return score
+        
+
+
+        
+if __name__ == '__main__':
+    import pickle
+    from data import MMKGDataset
+    graph_dataset = MMKGDataset(name='FB15K-237', root=f'./origin_data/FB15K-237')[0]
+    with open(os.path.join('./origin_data/FB15K-237', 'M3AE_embed.pkl'), 'rb') as fin:
+        m3ae_tokens = pickle.load(fin)
+    model = RGCNmodel('./origin_data/FB15K-237', m3ae_tokens, 400, 200, 237)
+    graph_dataset.x = model.multimodal_tokens
+    print(graph_dataset.x[graph_dataset.edge_index[0][:128]])
+    #x = model.forward_encoder(graph_dataset.x, graph_dataset.edge_index, graph_dataset.edge_type)
+    #print(x.shape)

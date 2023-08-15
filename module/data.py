@@ -1,6 +1,6 @@
-import threading
 from io import BytesIO
-from queue import Queue
+import json
+import os
 
 import gcsfs
 import h5py
@@ -8,13 +8,13 @@ import numpy as np
 import skimage.io
 import torch
 import torchvision
+from torch_geometric.data import InMemoryDataset, Data
 import transformers
 from ml_collections import ConfigDict
 from PIL import Image
 from skimage.color import gray2rgb, rgba2rgb
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-import torchvision
 from torchvision import transforms
 
 
@@ -499,3 +499,44 @@ class TextDataset(torch.utils.data.Dataset):
     def vocab_size(self):
         return self.tokenizer.vocab_size
 
+
+class MMKGDataset(InMemoryDataset):
+    def __init__(self, name, root, transform=None, pre_transform=None):
+        self.name = name
+        self.root = root
+        
+        super().__init__(root, transform, pre_transform)
+
+        self.data, self.slices = torch.load(self.processed_paths[0])
+    
+    @property
+    def raw_file_names(self):
+        return ['train_tasks.json', 'entity2ids.json', 'relation2ids.json']
+    
+    @property
+    def processed_file_names(self):
+        return [f'{self.name}.pt']
+
+    def download(self):
+        pass
+
+    def process(self):
+        train_tasks = json.load(open(os.path.join(self.root, self.raw_file_names[0])))
+        ent2id = json.load(open(os.path.join(self.root, self.raw_file_names[1])))
+        rel2id = json.load(open(os.path.join(self.root, self.raw_file_names[2])))
+        triples = list()
+        for rel in train_tasks.keys():
+            for triple in train_tasks[rel]:
+                h, r, t = triple
+                triples.append([ent2id[h], rel2id[r], ent2id[t]])
+        
+        edge_index = torch.tensor([[h, t] for h, _, t in triples], dtype= torch.long).t().contiguous()
+        edge_type = torch.tensor([r for _, r, _ in triples], dtype=torch.long)
+
+        data = Data(edge_index=edge_index, edge_type=edge_type)
+        #processed_path = os.path.join(self.processed_dir, self.processed_file_names[0])
+        torch.save((data, None), self.processed_paths[0])
+
+if __name__ == '__main__':
+    dataset = MMKGDataset(name='FB15K-237', root='./origin_data/FB15K-237')
+    data = dataset[0]

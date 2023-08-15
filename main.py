@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-
+import pickle
 
 from tqdm.auto import tqdm, trange
 from ml_collections import ConfigDict
@@ -9,16 +9,16 @@ from collections import deque
 import numpy as np
 import itertools
 
-from args import read_options
+from .module.args import read_options
 from utils import (
-     set_random_seed
+     set_random_seed, generate_m3ae_embed
 )
-from model import (
+from .module.model import (
     MaskedMultimodalAutoencoder, extract_patches, patch_mse_loss, cross_entropy_loss_and_accuracy,
-    mask_intersection, all_mask, mask_not
+    mask_intersection, all_mask, mask_not, RGCNmodel
 )
-from data import (
-    ImageTextDataset, TextDataset
+from .module.data import (
+    ImageTextDataset, TextDataset, MMKGDataset
 )
 
 def first_fusion_train(model, batch, args):
@@ -89,7 +89,7 @@ def first_fusion_train(model, batch, args):
 def main(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     set_random_seed(args.seed)
-
+    #First Fusion
     dataset = ImageTextDataset(ImageTextDataset.get_default_config(), 0)
     paired_dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -175,6 +175,23 @@ def main(args):
             scheduler.step()
     
     model.save(path=f"./saved_models/M3AE_{args.dataset}.pth")
+    image_patch_dim = args.patch_size * args.patch_size * 3
+    image_output_dim = image_patch_dim
+
+    data_path = os.path.join('./origin_data', args.dataset)
+    predict_model = torch.load(f"./saved_models/M3AE_{args.dataset}.pth")
+    unpaired_text_dataset.random_start_offset = 0
+    dataset.random_start_offset = 0
+    print('Generate pretraining embeddings')
+    generate_m3ae_embed(data_path, args, predict_model.module.to('cpu'), dataset, unpaired_text_dataset)
+
+    # Second fusion
+    graph_dataset = MMKGDataset(name=args.dataset, root=f'./origin_data/{args.dataset}')[0]
+    with open(os.path.join(data_path, 'M3AE_embed.pkl'), 'rb') as fin:
+        m3ae_tokens = pickle.load(fin)
+    model = RGCNmodel(root=f'./origin_data/{args.dataset}', m3ae_tokens=m3ae_tokens)
+    graph_dataset.x = model.multimodal_tokens
+    
             
 if __name__ == "__main__":
     args = read_options()

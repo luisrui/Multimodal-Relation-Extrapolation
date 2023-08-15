@@ -13,7 +13,7 @@ from collections import deque
 import numpy as np
 import itertools
 
-from args import read_options
+from module.args import read_options
 from utils import (
     set_random_seed, generate_m3ae_embed
 )
@@ -124,7 +124,7 @@ def m3aeFusion(gpu, args):
 
         for key, value in batch.items():
             batch[key] = value.to(gpu)
-        loss, info = first_fusion_train(model, batch, args, gpu)
+        loss, info = first_fusion_train(model, batch, args)
         loss = loss.to(gpu)
         optimizer.zero_grad()
         loss.backward()
@@ -145,7 +145,6 @@ def m3aeFusion(gpu, args):
     if gpu == 0:
         torch.save(model, f"./saved_models/M3AE_{args.dataset}.pth")
     # Train the TransAE model using the pretrained M3AE embeddings
-    if gpu == 0:
         image_patch_dim = args.patch_size * args.patch_size * 3
         image_output_dim = image_patch_dim
 
@@ -163,7 +162,7 @@ def TransAE(args):
     data_path = f"./origin_data/{args.dataset}/"
     with open(os.path.join(data_path, "entity2ids.json"), 'r') as fin:
         ent_id = json.load(fin)
-    with open(os.path.join(data_path, "M3AE_embed.pkl"), 'rb') as fin:
+    with open(os.path.join(data_path, 'M3AE_embed.pkl'), 'rb') as fin:
         m3ae_tokens = pickle.load(fin)
     with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
         ents_count = int(fp.readline()[:-1])
@@ -203,7 +202,7 @@ def TransAE(args):
         )
     
     transe.to(device)
-    trainer = transae.Trainer(model = model, data_loader = train_dataloader, train_times = 500, alpha = 0.5, use_gpu = True)
+    trainer = transae.Trainer(model = model, data_loader = train_dataloader, train_times = 500, alpha = 0.2, use_gpu = True)
     trainer.run()
     transe.save_checkpoint(f'./saved_models/{args.dataset}.ckpt')
 
@@ -221,7 +220,7 @@ if __name__ == "__main__":
     os.environ['MASTER_ADDR'] = 'localhost'             
     os.environ['MASTER_PORT'] = '1113'
     args.world_size = args.gpus * args.nodes
-    mp.spawn(m3aeFusion, args=(args,), nprocs=args.world_size) 
+    #mp.spawn(m3aeFusion, args=(args,), nprocs=args.world_size) 
     #To-Do: Make the Train TransAE procedure into a DDP version
     TransAE(args)
     
