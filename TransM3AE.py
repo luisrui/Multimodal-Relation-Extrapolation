@@ -13,7 +13,7 @@ from collections import deque
 import numpy as np
 import itertools
 
-from module.args import read_options
+from args import read_options
 from utils import (
     set_random_seed, generate_m3ae_embed
 )

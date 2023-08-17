@@ -14,16 +14,16 @@ from collections import deque
 import numpy as np
 import itertools
 
-from module.args import read_options
-from utils import (
+from .module.utils import (
      set_random_seed
 )
-from model import (
+from .module.model import (
     MaskedMultimodalAutoencoder, first_fusion_train
 )
-from data import (
+from .module.data import (
     ImageTextDataset, TextDataset
 )
+from args import read_options
     
 def main(gpu, args):
     rank = args.nr * args.gpus + gpu

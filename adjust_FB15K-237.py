@@ -22,7 +22,7 @@ for i, r in enumerate(rels):
         break
 print('test relations', 237 - (i + 1))
 
-train_tasks, test_tasks = dict(), dict()
+train_tasks, test_tasks = dict(), dict() 
 for rel in train_rels:
     train_tasks[rel] = tasks[rel]
 rels = list(tasks.keys())

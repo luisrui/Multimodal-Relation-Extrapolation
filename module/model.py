@@ -3,12 +3,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch_geometric.utils import batched_negative_sampling
 from torch_geometric.nn import RGCNConv
+
 from ml_collections import ConfigDict
 from ml_collections.config_dict import config_dict
 from tqdm import tqdm
-import numpy as np
 import os
 import json
+
+from .loss import MarginLoss
 
 def first_fusion_train(model, batch : dict, args : dict):
     image = batch['image']
@@ -74,7 +76,8 @@ def first_fusion_train(model, batch : dict, args : dict):
         info['average_unpaired_text_length'] = average_unpaired_text_length
     return loss, info
 
-
+def second_fusion_train():
+    return
 def extract_patches(image, patch_size):
     batch, height, width, channels = image.shape
     height, width = height // patch_size, width // patch_size
@@ -702,21 +705,22 @@ class MaskedMultimodalAutoencoder(nn.Module):
         )
         return image_output, text_output, image_mask, text_mask
 
-class RGCNmodel(nn.Module):
-    def __init__(self, root, m3ae_tokens, hidden_channels, dim, num_relations, score_norm_flag):
-        super(RGCNmodel, self).__init__()
-        self.multimodal_tokens = self._init_tokens(m3ae_tokens, root)
+class UnifiedModel(nn.Module):
+    def __init__(self, args, hidden_channels, dataset, dim, num_relations, score_norm_flag = False):
+        super(UnifiedModel, self).__init__()
+        self.M3AEmodel = MaskedMultimodalAutoencoder(
+            text_vocab_size=dataset.vocab_size,
+            image_output_dim=args.patch_size * args.patch_size * 3,
+            config_updates=ConfigDict(dict(model_type=args.model_type, image_mask_ratio=args.image_mask_ratio, text_mask_ratio=args.text_mask_ratio)),
+        )
         self.num_relations = num_relations
-        _, self.token_num, self.reduced_dim = self.multimodal_tokens.shape 
+        self.reduced_dim = self.M3AEmodel.config.emb_dim
+        self.token_num = dataset.config.unpaired_tokenizer_max_length
         self.dim = dim
         self.score_norm_flag = score_norm_flag
         self.rel_embedding = torch.nn.Embedding(self.num_relations, self.dim)
 
         self.dim_reduce1 = torch.nn.Linear(self.token_num, 1)
-        # self.dim_reduce2 = nn.Sequential(
-        #         torch.nn.Linear(self.reduced_dim, self.dim),
-        #         self.activation
-        #     )
         self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
         self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
 
@@ -739,10 +743,9 @@ class RGCNmodel(nn.Module):
         mm_tokens = torch.stack(mm_tokens)
         return mm_tokens
 
-    def forward_encoder(self, x, edge_index, edge_type):
+    def gcn_forward_encoder(self, x, edge_index, edge_type):
         x = self.dim_reduce1(x.transpose(-2, -1))
         x = x.view(x.shape[0], -1)
-        #x = self.dim_reduce2(x)
         x = self.conv1(x, edge_index, edge_type)
         x = torch.relu(x)
         x = self.conv2(x, edge_index, edge_type)
@@ -760,21 +763,44 @@ class RGCNmodel(nn.Module):
         score = torch.norm(score, self.p_norm, -1).flatten()
         return score
         
-    def forward(self, x, edge_index, edge_type):
-        x_ecd = self.forward_encoder(x, edge_index, edge_type) 
+    def forward(self, x, edge_index, edge_type, batch, deterministic=False):
+        image = batch['image']
+        text = batch['text']
+        text_padding_mask = batch['text_padding_mask']
+        unpaired_text = batch['unpaired_text']
+        unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
+        image_output, text_output, image_mask, text_mask = self.M3AEmodel(
+            image, 
+            text, 
+            text_padding_mask, 
+            deterministic)
+        _, unpaired_text_output, _, unpaired_text_mask = self.M3AEmodel(
+            None,
+            unpaired_text,
+            unpaired_text_padding_mask,
+            deterministic
+        )
+        x_ecd = self.gcn_forward_encoder(x, edge_index, edge_type) 
         score = self.transe_scoring(x_ecd, edge_index, edge_type)
-        return score
+        batch_output = dict(
+            image_output=image_output,
+            text_output=text_output,
+            image_mask=image_mask,
+            text_mask=text_mask,
+            unpaired_text_output=unpaired_text_output,
+            unpaired_text_mask=unpaired_text_mask
+        )
+
+        return score, batch_output
         
 
-
-        
 if __name__ == '__main__':
     import pickle
     from data import MMKGDataset
     graph_dataset = MMKGDataset(name='FB15K-237', root=f'./origin_data/FB15K-237')[0]
     with open(os.path.join('./origin_data/FB15K-237', 'M3AE_embed.pkl'), 'rb') as fin:
         m3ae_tokens = pickle.load(fin)
-    model = RGCNmodel('./origin_data/FB15K-237', m3ae_tokens, 400, 200, 237)
+    model = UnifiedModel('./origin_data/FB15K-237', m3ae_tokens, 400, 200, 237)
     graph_dataset.x = model.multimodal_tokens
     print(graph_dataset.x[graph_dataset.edge_index[0][:128]])
     #x = model.forward_encoder(graph_dataset.x, graph_dataset.edge_index, graph_dataset.edge_type)
