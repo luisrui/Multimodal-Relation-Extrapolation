@@ -66,6 +66,3 @@ def generate_m3ae_embed(src_path, args, model, dataset, unpaired_text_dataset):
     #print(embedding)
     with open(os.path.join(src_path, 'M3AE_embed.pkl'), 'wb') as fout:
         pickle.dump(embedding, fout)
-
-def negative_sampling():
-    return

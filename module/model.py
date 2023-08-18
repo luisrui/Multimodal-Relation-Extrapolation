@@ -9,6 +9,7 @@ from ml_collections.config_dict import config_dict
 from tqdm import tqdm
 import os
 import json
+import einops
 
 from .loss import MarginLoss
 
@@ -76,8 +77,59 @@ def first_fusion_train(model, batch : dict, args : dict):
         info['average_unpaired_text_length'] = average_unpaired_text_length
     return loss, info
 
-def second_fusion_train():
+def fusion_train(model, sub_edge_index, sub_edge_type, batch_data, args):
+    image = batch_data['image']
+    text = batch_data['text']
+    text_padding_mask = batch_data['text_padding_mask']
+    unpaired_text = batch_data['unpaired_text']
+    unpaired_text_padding_mask = batch_data['unpaired_text_padding_mask']
+    image = batch_data['image']
+    text = batch_data['text']
+    text_padding_mask = batch_data['text_padding_mask']
+    unpaired_text = batch_data['unpaired_text']
+    unpaired_text_padding_mask = batch_data['unpaired_text_padding_mask']
+    image_patches = extract_patches(image, args.patch_size)
+    # Forward Propogation
+    image_output, text_output, image_mask, text_mask = model(
+        image_patches,
+        text,
+        text_padding_mask,
+        deterministic=False,
+    )
+    _, unpaired_text_output, _, unpaired_text_mask = model(
+        None,
+        unpaired_text,
+        unpaired_text_padding_mask,
+        deterministic=False,
+    )
+    #Missing discretized image optimization
+    image_loss = patch_mse_loss(
+        image_output, image_patches,
+        None if args.image_all_token_loss else image_mask
+    )
+    image_accuracy = 0.0
+
+    text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
+        text_output, text,  
+        mask_intersection(
+            all_mask(text) if args.text_all_token_loss else text_mask,
+            mask_not(text_padding_mask)
+        )
+    )
+    unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
+        unpaired_text_output, unpaired_text,
+        mask_intersection(
+            all_mask(unpaired_text) if args.text_all_token_loss else unpaired_text_mask,
+            mask_not(unpaired_text_padding_mask)
+        )
+    )
+    loss = (
+        args.image_loss_weight * image_loss
+        + args.text_loss_weight * text_loss
+        + args.unpaired_text_loss_weight * unpaired_text_loss
+    )
     return
+
 def extract_patches(image, patch_size):
     batch, height, width, channels = image.shape
     height, width = height // patch_size, width // patch_size
@@ -508,6 +560,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             }[name]
         else:
             return 0.0
+        
     def get_model_device(self):
         return next(self.parameters()).device
     
@@ -713,35 +766,43 @@ class UnifiedModel(nn.Module):
             image_output_dim=args.patch_size * args.patch_size * 3,
             config_updates=ConfigDict(dict(model_type=args.model_type, image_mask_ratio=args.image_mask_ratio, text_mask_ratio=args.text_mask_ratio)),
         )
+        assert dataset.preprocessed == True
+        self.patch_size = args.patch_size
+        self.mm_info = dataset.get_mm_info()
         self.num_relations = num_relations
         self.reduced_dim = self.M3AEmodel.config.emb_dim
         self.token_num = dataset.config.unpaired_tokenizer_max_length
         self.dim = dim
         self.score_norm_flag = score_norm_flag
-        self.rel_embedding = torch.nn.Embedding(self.num_relations, self.dim)
+        self.rel_embedding = nn.Embedding(self.num_relations, self.dim)
+        self.m3ae_tokens = nn.init.xavier_uniform_(torch.empty((dataset.num_nodes, self.token_num, self.reduced_dim)))
 
-        self.dim_reduce1 = torch.nn.Linear(self.token_num, 1)
+        self.dim_reduce1 = nn.Linear(self.token_num, 1)
         self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
         self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
 
-    def _init_tokens(self, m3ae_tokens, root):
-        mm_tokens = []
-        mm_token_length = max([token.shape[1] for token in m3ae_tokens])
-        entity2id = json.load(open(os.path.join(root, 'entity2ids.json')))
-        m3ae_ent_id = json.load(open(os.path.join(root, 'entity2ids_m3ae.json')))
-        text_only_token_length = min([token.shape[1] for token in m3ae_tokens])
-        for _, entity in tqdm(enumerate(entity2id)):
-            m3ae_id = m3ae_ent_id[entity]
-            ent_tokens = torch.from_numpy(m3ae_tokens[m3ae_id]).clone()
-
-            if ent_tokens.shape[1] == text_only_token_length: #padding for text only tokens
-                pad_tokens = torch.empty(1, mm_token_length-text_only_token_length, ent_tokens.shape[2])
-                nn.init.xavier_uniform_(pad_tokens)
-                ent_tokens = torch.cat([ent_tokens, pad_tokens], dim=1)
-
-            mm_tokens.append(ent_tokens.squeeze(0))
-        mm_tokens = torch.stack(mm_tokens)
-        return mm_tokens
+    def get_unmasked_features(self, node_list):
+        new_matched_features = []
+        for node in node_list:
+            try:
+                image, text, text_padding_mask = self.mm_info[node]
+                image = torch.from_numpy(image.transpose(2, 0, 1)).unsqueeze(0)
+                image_patches = einops.rearrange(image, 
+                    'b c (h p1) (w p2) -> b (h w) (c p1 p2)',
+                    p1=self.patch_size,
+                    p2=self.patch_size)
+                text_token = torch.from_numpy(text_token).unsqueeze(0)
+                mask = torch.from_numpy(mask).unsqueeze(0)
+                with torch.no_grad():
+                    representation = model.forward_representation(image=image_patches, text=text_token, text_padding_mask=mask, deterministic=True)
+            except:
+                unpaired_text, unpaired_text_padding_mask = self.mm_info[node]
+                unpaired_text = torch.from_numpy(unpaired_text).unsqueeze(0)
+                unpaired_text_padding_mask = torch.from_numpy(unpaired_text_padding_mask).unsqueeze(0)
+                with torch.no_grad():
+                    representation = model.forward_representation(image=None, text=unpaired_text, text_padding_mask=unpaired_text_padding_mask, deterministic=True)
+            new_matched_features.append(representation)
+        return new_matched_features
 
     def gcn_forward_encoder(self, x, edge_index, edge_type):
         x = self.dim_reduce1(x.transpose(-2, -1))
@@ -762,8 +823,8 @@ class UnifiedModel(nn.Module):
         score = (batch_head + batch_rel) - batch_tail
         score = torch.norm(score, self.p_norm, -1).flatten()
         return score
-        
-    def forward(self, x, edge_index, edge_type, batch, deterministic=False):
+    
+    def forward(self, node_list, x, edge_index, edge_type, batch, deterministic=False):
         image = batch['image']
         text = batch['text']
         text_padding_mask = batch['text_padding_mask']
@@ -780,6 +841,9 @@ class UnifiedModel(nn.Module):
             unpaired_text_padding_mask,
             deterministic
         )
+        new_features = self.get_unmasked_features(node_list)
+        for node, new_feature in zip(node_list, new_features):
+            x[node] = new_feature
         x_ecd = self.gcn_forward_encoder(x, edge_index, edge_type) 
         score = self.transe_scoring(x_ecd, edge_index, edge_type)
         batch_output = dict(
