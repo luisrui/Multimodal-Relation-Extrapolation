@@ -12,19 +12,20 @@ def read_options():
                         help='number of gpus per node')
     parser.add_argument('--nr', default=0, type=int,
                         help='ranking within the nodes')
-    # M3AE Specification
-    parser.add_argument('--model_type', default='small', type=str)
+    # fusion modal Specification
     parser.add_argument('--image_mask_ratio', default='0.75', type=float)
     parser.add_argument('--text_mask_ratio', default='0.75', type=float)
     parser.add_argument('--load_checkpoint', default='', type=str)
-    parser.add_argument('--batch_size', default=256, type=int,
+    parser.add_argument('--batch_size', default=16, type=int,
                         help='ranking within the nodes')
-    parser.add_argument('--m3ae_epochs', default=200, type=int)
+    parser.add_argument('--epochs', default=1, type=int)
     parser.add_argument('--dataloader_shuffle', default=False, type=bool, 
                         help='whether the dataloader need to shuffle before load')
     parser.add_argument('--dataloader_n_workers', default=4, type=int)
     parser.add_argument('--patch_size', default=16, type=int)
 
+    ## M3AE part
+    parser.add_argument('--model_type', default='small', type=str)
     parser.add_argument('--image_loss_weight', default=1.0, type=float)
     parser.add_argument('--text_loss_weight', default=1.0, type=float)
     parser.add_argument('--unpaired_text_loss_weight', default=1.0, type=float)
@@ -35,7 +36,11 @@ def read_options():
     parser.add_argument('--accumulate_grad_steps', default=1, type=int)
     parser.add_argument('--lr_minimum', default=0.0, type=float)
     parser.add_argument('--discretized_image', default=False, type=bool)
-    # # Wgan Specification
+
+    ## GCN part
+    parser.add_argument('--emb_dim', default=200, type=int)
+    parser.add_argument('--gcn_part_loss', default=0.5, type=float)
+    # Wgan Specification
     parser.add_argument("--embed_model", default="TransM3AE", type=str)
     # parser.add_argument("--prefix", default="intial", type=str)
 

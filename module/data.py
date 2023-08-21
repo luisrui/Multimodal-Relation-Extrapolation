@@ -585,11 +585,11 @@ class MMKGDataset(torch_geometric.data.Dataset):
 
         self.struc_dataset = self.get(0)
         self.preprocessed = False
-        self._multimodal_prepro()
+        #self._multimodal_prepro()
 
     @property
     def raw_file_names(self):
-        return ['train_tasks.json', 'entity2ids.json', 'relation2ids.json']
+        return ['train_tasks_all.json', 'entity2ids.json', 'relation2ids_allrel.json']
     
     @property
     def processed_file_names(self):
@@ -638,7 +638,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
     def get_mm_info(self):
         return self.mm_info
     
-    def _multimodal_prepro(self):
+    def multimodal_prepro(self):
         print('Making multimodal infomation preprocessing!')
 
         def drop_text(raw_index):
@@ -648,57 +648,36 @@ class MMKGDataset(torch_geometric.data.Dataset):
         
         steps = trange(0, len(self.mm_info))
         for idx, info in zip(steps, self.mm_info):
+            image_ori, text = None, None
             try:
                 image_ori, text = info
             except:
                 text = info[0]
 
             if image_ori is not None:
-                with BytesIO(image_ori) as fin:
-                    image = skimage.io.imread(fin)
-                if len(image.shape) == 2:
-                    image = gray2rgb(image)
-                elif image.shape[-1] == 4:
-                    image = rgba2rgb(image)
-
-                image = (
-                    self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
-                )
-                image = image.astype(np.float32)
-
+                image = self._image_prepro(image_ori)
                 if self.config.image_only:
                     self.mm_info[idx] = [image]
                     continue
-
                 if not self.config.tokenize:
                     self.mm_info[idx] = [image, text]
                     continue
-            
-            encoded_text = self.tokenizer(
-                text,
-                padding="max_length",
-                truncation=True,
-                max_length=self.config.tokenizer_max_length,
-                return_tensors="np",
-                add_special_tokens=False,
-            )       
-            if encoded_text["input_ids"][0].size == 0:  # Empty token
-                tokenized_text = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
-                padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
+                text, text_padding_mask = self._text_prepro(text, self.config.tokenizer_max_length)
+                self.mm_info[idx] = [image, text, text_padding_mask]
             else:
-                tokenized_text = encoded_text["input_ids"][0]
-                padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
-
-            if image is not None:
-                self.mm_info[idx] = [image, tokenized_text, padding_mask]
-            else:
-                self.mm_info[idx] = [tokenized_text, padding_mask]
-            
+                if not self.config.tokenize:
+                    self.mm_info[idx] = [text]
+                    continue
+                text, text_padding_mask = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
+                self.mm_info[idx] = [text, text_padding_mask]
             # if len(text) == 0 or drop_text(idx):
             #     tokenized_caption = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
             #     padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
             #     self.mm_info[idx] = [image, tokenized_caption, padding_mask]
         self.preprocessed = True
+
+        with open(os.path.join(self.root, 'multimodal_processed.pkl'), 'wb') as fout:
+            pickle.dump(self.mm_info, fout)
         print('Finish multimodal infomation preprocessing!')
 
     def _image_prepro(self, image_ori):
@@ -737,14 +716,14 @@ class MMKGDataset(torch_geometric.data.Dataset):
         return tokenized_text, padding_mask
     
     def generate_batch(self, node_list):
-        sub_edge_index, sub_edge_type = subgraph(node_list, self.struc_dataset.edge_index, self.struc_dataset.edge_type)
+        sub_edge_index, sub_edge_type = subgraph(node_list, self.struc_dataset.edge_index.cpu(), self.struc_dataset.edge_type.cpu())
 
         batch_unprocessed_data = [self.mm_info[idx] for idx in node_list]
         mm_batch = defaultdict(list)
         #images, tokenized_texts, padding_masks, unpaired_texts, unpaired_text_padding_masks = list(), list(), list(), list(), list()
         paired_nodes, unpaired_nodes = list(), list()
         for node_info in batch_unprocessed_data:
-            assert len(node_info) == 2 or len(node_info) == 1
+            #assert len(node_info) == 2 or len(node_info) == 1
             if self.preprocessed == False:
                 if node_info.__len__() == 2:
                     image, text = node_info
@@ -789,6 +768,4 @@ if __name__ == '__main__':
     device = 'cpu'
     graph_dataset = MMKGDataset(config=MMKGDataset.get_default_config(), name='FB15K-237', root='../origin_data/FB15K-237', device=device)
     graph_dataset.generate_batch(torch.arange(1, 100))
-    #data = dataset[0]
-    # from torch_geometric.utils import subgraph
-    # subgraph_data = subgraph(torch.tensor([1,2,3,4,5]), graph_dataset.edge_index, graph_dataset.edge_type)
+    

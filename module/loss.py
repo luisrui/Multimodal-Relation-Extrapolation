@@ -23,7 +23,6 @@ class MarginLoss(nn.Module):
         else:
             return (torch.max(p_score - n_score, -self.margin)).mean() + self.margin
             
-    
     def predict(self, p_score, n_score):
         score = self.forward(p_score, n_score)
         return score.cpu().data.numpy()
