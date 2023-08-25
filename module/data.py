@@ -10,8 +10,8 @@ import skimage.io
 import torch
 import torchvision
 import torch_geometric
-from torch_geometric.data import InMemoryDataset, Data, Dataset
-from torch_geometric.utils import subgraph
+from torch_geometric.loader import NeighborLoader
+from torch_geometric.data import Data, Dataset
 import transformers
 from ml_collections import ConfigDict
 from collections import defaultdict
@@ -537,11 +537,12 @@ class MMKGDataset(torch_geometric.data.Dataset):
             config.update(ConfigDict(updates).copy_and_resolve_references())
         return config
     
-    def __init__(self, config, name, root, device, transform=None, pre_transform=None):
+    def __init__(self, config, train_file, name, root, device, transform=None, pre_transform=None):
         self.config = self.get_default_config(config)
         self.name = name
         self.root = root
         self.device = device
+        self.train_file = train_file
         
         super().__init__(root, transform, pre_transform)
 
@@ -589,7 +590,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
 
     @property
     def raw_file_names(self):
-        return ['train_tasks_all.json', 'entity2ids.json', 'relation2ids_allrel.json']
+        return [self.train_file, 'entity2ids.json', 'relation2ids_allrel.json']
     
     @property
     def processed_file_names(self):
@@ -743,7 +744,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
                         mm_batch['unpaired_text'].append(text)
                         mm_batch['unpaired_text_padding_mask'].append(text_padding_mask)
                     except:
-                        text = self._text_prepro(text, self.config.tokenizer_max_length)
+                        text = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
                     unpaired_nodes.append(node_info)
             else: 
                 if node_info.__len__() == 2:
@@ -764,8 +765,194 @@ class MMKGDataset(torch_geometric.data.Dataset):
         return sub_edge_index, sub_edge_type, mm_batch
 
 
+class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
+    @staticmethod
+    def get_default_config(updates=None):
+        config = ConfigDict()
+
+        config.start_index = 0
+        config.max_length = int(1e9)
+        config.random_start = True
+
+        config.image_only = False
+        config.tokenize = True
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer_max_length = 64
+        config.unpaired_tokenizer_max_length = 320
+        
+        config.start_index = 0
+        config.max_length = int(1e9)
+        config.random_start = False
+
+        config.transform_type = "pretrain"
+        config.image_size = 256
+
+        config.image_normalization = 'imagenet'
+        config.custom_image_mean = [0.485, 0.456, 0.406]
+        config.custom_image_std = [0.229, 0.224, 0.225]
+
+        config.random_drop_text = 0.0
+        config.deterministic_drop_text = 0.0
+
+        if updates is not None:
+            config.update(ConfigDict(updates).copy_and_resolve_references())
+        return config
+    
+    def __init__(self, config, root, graph_dataset):
+        self.config = self.get_default_config(config)
+        self.root = root
+        with open(os.path.join(self.root, 'MultiModalInfo.pkl'), 'rb') as fin:
+            self.mm_info = pickle.load(fin)
+        self.num_nodes = graph_dataset.num_nodes
+        #self.triples, self.num_nodes = self._prepro(train_tasks)
+
+        if self.config.image_normalization == 'imagenet':
+            self.image_mean = (0.485, 0.456, 0.406)
+            self.image_std = (0.229, 0.224, 0.225)
+        elif self.config.image_normalization == 'cc12m':
+            self.image_mean = (0.5762, 0.5503, 0.5213)
+            self.image_std = (0.3207, 0.3169, 0.3307)
+        elif self.config.image_normalization == 'none':
+            self.image_mean = (0.0, 0.0, 0.0)
+            self.image_std = (1.0, 1.0, 1.0)
+        elif self.config.image_normalization == 'custom':
+            self.image_mean = tuple(float(x) for x in self.config.custom_image_mean.split('-'))
+            self.image_std = tuple(float(x) for x in self.config.custom_image_std.split('-'))
+            assert len(self.image_mean) == len(self.image_std) == 3
+        else:
+            raise ValueError('Unsupported image normalization mode!')
+
+        if self.config.transform_type == "pretrain":
+            # Use Kaiming's simple pretrain processing
+            self.transform_image = transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(
+                        self.config.image_size,
+                        scale=(0.2, 1.0),
+                        interpolation=transforms.InterpolationMode.BICUBIC,
+                    ),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=self.image_mean, std=self.image_std),
+                ]
+            )
+        else:
+            raise ValueError("Unsupported transform_type!")
+        self.tokenizer = transformers.BertTokenizer.from_pretrained(
+            self.config.tokenizer
+        )
+
+    def __getitem__(self, idx):
+        triple = self.triples[idx]
+        h, r, t = triple
+        if self.mm_info[h].__len__() == 2:
+            image_ori, text_ori = self.mm_info[h]
+        else:
+            image_ori, text_ori = None, self.mm_info[h][0]
+        head_batch = self._multimodal_prepro(image_ori, text_ori)
+
+        if self.mm_info[t].__len__() == 2:
+            image_ori, text_ori = self.mm_info[t]
+        else:
+            image_ori, text_ori = None, self.mm_info[t][0]
+        tail_batch = self._multimodal_prepro(image_ori, text_ori)
+        
+        images = [head_batch['image'], tail_batch['image']]
+        texts = [head_batch['text'], tail_batch['text']]
+        text_padding_masks = [head_batch['text_padding_mask'], tail_batch['text_padding_mask']]
+        return triple, images, texts, text_padding_masks
+    
+    def __len__(self):
+        return len(self.triples)
+    
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
+    
+    def _prepro(self, train_tasks_name):
+        ent2id = json.load(open(os.path.join(self.root, 'entity2ids.json')))
+        num_nodes = len(ent2id)
+        rel2id = json.load(open(os.path.join(self.root, 'relation2ids_allrel.json')))
+        train_tasks = json.load(open(os.path.join(self.root, train_tasks_name)))
+        triples = list()
+        for rel in train_tasks.keys():
+            for triple in train_tasks[rel]:
+                h, r, t = triple
+                triples.append([ent2id[h], rel2id[r], ent2id[t]])
+        return triples, num_nodes
+    
+    def _multimodal_prepro(self, image_ori, text_ori):
+        batch = dict()
+        if image_ori is not None:
+            batch['ispaired'] = True
+            image = self._image_prepro(image_ori)
+            batch['image'] = image
+            if self.config.image_only:
+                return batch
+            try:
+                text, text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
+                batch['text'] = text
+                batch['text_padding_mask'] = text_padding_mask
+            except:
+                batch['text'] = text_ori
+        else:
+            batch['image'] = np.random.randn(256, 256, 3)
+            batch['ispaired'] = False
+            try:
+                unpaired_text, unpaired_text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length )
+                batch['text'] = unpaired_text
+                batch['text_padding_mask'] = unpaired_text_padding_mask
+            except:
+                batch['text'] = text_ori
+        return batch
+            
+    def _image_prepro(self, image_ori):
+        with BytesIO(image_ori) as fin:
+            image = skimage.io.imread(fin)
+        if len(image.shape) == 2:
+            image = gray2rgb(image)
+        elif image.shape[-1] == 4:
+            image = rgba2rgb(image)
+
+        image = (
+            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
+        )
+        image = image.astype(np.float32)
+        return image
+    
+    def _text_prepro(self, text, tokenizer_max_length):
+        if not self.config.tokenize:
+            return text
+        
+        encoded_text = self.tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=tokenizer_max_length,
+            return_tensors="np",
+            add_special_tokens=False,
+        )       
+        if encoded_text["input_ids"][0].size == 0:  # Empty token
+            tokenized_text = np.zeros(tokenizer_max_length, dtype=np.int32)
+            padding_mask = np.ones(tokenizer_max_length, dtype=np.float32)
+        else:
+            tokenized_text = encoded_text["input_ids"][0]
+            padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
+        return tokenized_text, padding_mask
+
+
 if __name__ == '__main__':
-    device = 'cpu'
-    graph_dataset = MMKGDataset(config=MMKGDataset.get_default_config(), name='FB15K-237', root='../origin_data/FB15K-237', device=device)
-    graph_dataset.generate_batch(torch.arange(1, 100))
+    # device = 'cpu'
+    # graph_dataset = MMKGDataset(config=MMKGDataset.get_default_config(), name='FB15K-237', root='../origin_data/FB15K-237', device=device)
+    # graph_dataset.generate_batch(torch.arange(1, 100))
+    dataset = MultiModalKnowledgeGraphDataset(MultiModalKnowledgeGraphDataset.get_default_config(), '../origin_data/FB15K-237', 'train_tasks_all.json')
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=128,
+        drop_last=True,
+        shuffle=True,
+        num_workers=8,
+        prefetch_factor=2,
+        persistent_workers=True,
+    )
     

@@ -5,6 +5,7 @@ import json
 import einops
 import pickle
 from tqdm.auto import trange
+from collections import defaultdict
 
 def set_random_seed(seed):
     torch.manual_seed(seed)
@@ -66,3 +67,24 @@ def generate_m3ae_embed(src_path, args, model, dataset, unpaired_text_dataset):
     #print(embedding)
     with open(os.path.join(src_path, 'M3AE_embed.pkl'), 'wb') as fout:
         pickle.dump(embedding, fout)
+
+
+def generate_subgraph(triples):
+    heads, relations, tails = triples
+    edge_index = torch.tensor([[h, t] for h, t in zip(heads, tails)], dtype=torch.long).t().contiguous()
+    edge_type = relations.clone().detach()
+    node_list = torch.unique(edge_index.flatten())
+    return node_list, edge_index, edge_type
+
+def generate_batchdata(triples, images, texts, text_padding_masks):
+    node_list, sub_edge_index, sub_edge_type = generate_subgraph(triples)
+    
+
+    batch = dict()
+    images = torch.cat(images, dim=0)
+    texts = torch.cat(texts, dim=0)
+    text_padding_masks = torch.cat(text_padding_masks, dim=0)
+    batch['image'] = images
+    batch['text'] = texts
+    batch['text_padding_mask'] = text_padding_masks
+    return node_list, sub_edge_index, sub_edge_type, batch

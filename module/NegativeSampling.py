@@ -143,8 +143,8 @@ class NegativeSampling(BaseModule):
 		# 	self.rig_mean[r] = self.freqRel[r] / len(self.t_of_r[r])
 	
 	def scoring_fn(self, x, edge_index, edge_type):
-		batch_head = x[edge_index[0]]
-		batch_tail = x[edge_index[1]]
+		batch_head = x[edge_index[0].long()]
+		batch_tail = x[edge_index[1].long()]
 		batch_rel = self.rel_embedding(edge_type)
 		if self.score_norm_flag:
 			batch_head = F.normalize(batch_head, 2, -1)
@@ -161,13 +161,13 @@ class NegativeSampling(BaseModule):
 		assert edge_index.shape[0] == 2
 		batch_h, batch_t, batch_r = edge_index[0], edge_index[1], edge_type
 		len_triples = batch_h.__len__()
-		self.__count_htr(batch_h.numpy(), batch_r.numpy(), batch_t.numpy())
+		self.__count_htr(batch_h.cpu().numpy(), batch_r.cpu().numpy(), batch_t.cpu().numpy())
 		batch_data = {}
 		if self.sampling_mode == "normal":
 			batch_data['mode'] = "normal"
-			batch_h_sample = np.repeat(batch_h.view(-1, 1).numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
-			batch_t_sample = np.repeat(batch_t.view(-1, 1).numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
-			batch_r_sample = np.repeat(batch_r.view(-1, 1).numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
+			batch_h_sample = np.repeat(batch_h.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
+			batch_t_sample = np.repeat(batch_t.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
+			batch_r_sample = np.repeat(batch_r.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
 			for idx, (h, t, r) in enumerate(zip(batch_h, batch_t, batch_r)):
 				last = 1
 				if self.neg_ent > 0:
@@ -189,8 +189,8 @@ class NegativeSampling(BaseModule):
 		#batch_y = np.concatenate([np.ones((len_triples, 1)), np.zeros((len_triples, self.neg_ent + self.neg_rel))], -1).transpose()
 		# expand_edge_h = torch.tensor(batch_h.squeeze().flatten())
 		# expand_edge_t = torch.tensor(batch_t.squeeze().flatten())
-		expand_edge_index = torch.tensor(np.array([batch_h.squeeze().flatten(), batch_t.squeeze().flatten()]), dtype=torch.int64)
-		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int64)
+		expand_edge_index = torch.tensor(np.array([batch_h.squeeze().flatten(), batch_t.squeeze().flatten()]), dtype=torch.int32)
+		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int32)
 		return expand_edge_index, expand_edge_type
 	
 	def _get_positive_score(self, score, num_pos_samples):
@@ -223,43 +223,43 @@ class NegativeSampling(BaseModule):
 		image = batch['image']
 		text = batch['text']
 		text_padding_mask = batch['text_padding_mask']
-		unpaired_text = batch['unpaired_text']
-		unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
+		# unpaired_text = batch['unpaired_text']
+		# unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
 		image_output = batch_output['image_output']
 		image_mask = batch_output['image_mask']
 		text_output = batch_output['text_output']
 		text_mask= batch_output['text_mask']
-		unpaired_text_output = batch_output['unpaired_text_output']
-		unpaired_text_mask = batch_output['unpaired_text_mask']
+		# unpaired_text_output = batch_output['unpaired_text_output']
+		# unpaired_text_mask = batch_output['unpaired_text_mask']
 		image_patches = extract_patches(image, self.args.patch_size)
 		# Forward Propogation
 		#Missing discretized image optimization
 		image_loss = patch_mse_loss(
-			image_output, image_patches,
+			image_output, image_patches.to(device),
 			None if self.args.image_all_token_loss else image_mask
 		)
 		text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
 			text_output, text,  
 			mask_intersection(
 				all_mask(text) if self.args.text_all_token_loss else text_mask,
-				mask_not(text_padding_mask)
+				mask_not(text_padding_mask).to(device)
 			)
 		)
-		if unpaired_text_output is not None:
-			unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
-				unpaired_text_output, unpaired_text,
-				mask_intersection(
-					all_mask(unpaired_text) if self.args.text_all_token_loss else unpaired_text_mask,
-					mask_not(unpaired_text_padding_mask)
-				)
-			)
-		else:
-			unpaired_text_loss = 0
+		# if unpaired_text_output is not None:
+		# 	unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
+		# 		unpaired_text_output, unpaired_text,
+		# 		mask_intersection(
+		# 			all_mask(unpaired_text) if self.args.text_all_token_loss else unpaired_text_mask,
+		# 			mask_not(unpaired_text_padding_mask)
+		# 		)
+		# 	)
+		# else:
+		# 	unpaired_text_loss = 0
 
 		loss_image_text = (
 			self.args.image_loss_weight * image_loss
 			+ self.args.text_loss_weight * text_loss
-			+ self.args.unpaired_text_loss_weight * unpaired_text_loss
+			# + self.args.unpaired_text_loss_weight * unpaired_text_loss
 		)
 		
 		loss = loss_image_text + self.args.gcn_part_loss * loss_res_gcn
@@ -268,7 +268,7 @@ class NegativeSampling(BaseModule):
 			loss_image_text=loss_image_text,
 			image_loss=image_loss,
 			text_loss=text_loss,
-			unpaired_text_loss=unpaired_text_loss
+			# unpaired_text_loss=unpaired_text_loss
 		)
 		return loss, info
 	
@@ -312,7 +312,7 @@ class NegativeSampling(BaseModule):
 		return np.concatenate(neg_list)[:neg_size]
 	
 	def __corrupt_head(self, node_list, t, r, num_max = 1):
-		tmp = torch.tensor(random.sample(node_list.numpy().tolist(), k=num_max))
+		tmp = torch.tensor(random.sample(node_list.cpu().numpy().tolist(), k=num_max))
 		t_index, r_index= t.item(), r.item()
 		if not self.filter_flag:
 			return tmp
@@ -321,7 +321,7 @@ class NegativeSampling(BaseModule):
 		return neg
 
 	def __corrupt_tail(self, h, r, node_list, num_max = 1):
-		tmp = torch.tensor(random.sample(node_list.numpy().tolist(), k=num_max))
+		tmp = torch.tensor(random.sample(node_list.cpu().numpy().tolist(), k=num_max))
 		h_index, r_index= h.item(), r.item()
 		if not self.filter_flag:
 			return tmp

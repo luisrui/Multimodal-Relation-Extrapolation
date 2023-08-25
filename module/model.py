@@ -1,3 +1,9 @@
+from io import BytesIO
+import skimage.io
+from skimage.color import gray2rgb, rgba2rgb
+import numpy as np
+from PIL import Image
+
 import torch 
 import torch.nn as nn
 from torch.nn import functional as F
@@ -187,6 +193,14 @@ def get_transformer_by_config(model_type, config):
         config.num_heads = 16
         config.dec_num_heads = 16
         config.mlp_ratio = 4
+    elif model_type == 'tiny':
+        config.emb_dim = 192
+        config.dec_emb_dim = 512
+        config.depth = 12
+        config.dec_depth = 8
+        config.num_heads = 6
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
     else:
         raise ValueError('Unsupported model type!')
 
@@ -231,6 +245,7 @@ def patch_mse_loss(patch_output, patch_target, valid=None):
             dim=-1,
         ) / valid_ratio
     )
+
 # @title PyTorch transformer definition
 class MLP(nn.Module):
     def __init__(self, hidden_dim, output_dim, depth, input_norm=True):
@@ -712,16 +727,54 @@ class UnifiedModel(nn.Module):
         )
         self.patch_size = args.patch_size
         self.mm_info = mm_info
+
+        self.paired_tokenizer_max_length = dataset.config.tokenizer_max_length
+        self.unpaired_tokenizer_max_length = dataset.config.unpaired_tokenizer_max_length
+        self.transform_image = dataset.transform_image
+        self.tokenizer = dataset.tokenizer
+        
         self.num_relations = num_relations
         self.reduced_dim = self.M3AEmodel.config.emb_dim
         self.token_num = dataset.config.unpaired_tokenizer_max_length
         self.dim = args.emb_dim
         self.m3ae_tokens = nn.init.xavier_uniform_(torch.empty((dataset.num_nodes, self.token_num, self.reduced_dim)))
 
-        self.dim_reduce1 = nn.Linear(self.token_num, 1)
+        self.dim_reduce1 = nn.Linear(self.token_num, 1) # 320 -> 1
         self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
         self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
 
+    def _image_prepro(self, image_ori):
+        with BytesIO(image_ori) as fin:
+            image = skimage.io.imread(fin)
+        if len(image.shape) == 2:
+            image = gray2rgb(image)
+        elif image.shape[-1] == 4:
+            image = rgba2rgb(image)
+
+        image = (
+            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
+        )
+        image = image.astype(np.float32)
+
+        return image
+    
+    def _text_prepro(self, text, tokenizer_max_length):
+        encoded_text = self.tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=tokenizer_max_length,
+            return_tensors="np",
+            add_special_tokens=False,
+        )       
+        if encoded_text["input_ids"][0].size == 0:  # Empty token
+            tokenized_text = np.zeros(tokenizer_max_length, dtype=np.int32)
+            padding_mask = np.ones(tokenizer_max_length, dtype=np.float32)
+        else:
+            tokenized_text = encoded_text["input_ids"][0]
+            padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
+        return tokenized_text, padding_mask
+    
     def get_model_device(self):
         return next(self.parameters()).device
     
@@ -729,22 +782,28 @@ class UnifiedModel(nn.Module):
         new_matched_features = []
         model_device = self.get_model_device()
         for node in node_list:
-            if len(self.mm_info[node]) == 3:
-                image, text, text_padding_mask = self.mm_info[node]
+            if len(self.mm_info[node]) == 2:
+                image_ori, text_ori = self.mm_info[node]
+                image = self._image_prepro(image_ori)
+                # image, text, text_padding_mask = self.mm_info[node]
                 image = torch.from_numpy(image.transpose(2, 0, 1)).unsqueeze(0)
                 image_patches = einops.rearrange(image, 
                     'b c (h p1) (w p2) -> b (h w) (c p1 p2)',
                     p1=self.patch_size,
                     p2=self.patch_size).to(model_device)
+                text, text_padding_mask = self._text_prepro(text_ori, self.paired_tokenizer_max_length)
                 text_token = torch.from_numpy(text).unsqueeze(0).to(model_device)
                 mask = torch.from_numpy(text_padding_mask).unsqueeze(0).to(model_device)
-                with torch.enable_grad():
+                #with torch.enable_grad():
+                with torch.no_grad():
                     representation = self.M3AEmodel.forward_representation(image=image_patches, text=text_token, text_padding_mask=mask, deterministic=True)
             else:
-                unpaired_text, unpaired_text_padding_mask = self.mm_info[node]
+                unpaired_text_ori = self.mm_info[node][0]
+                unpaired_text, unpaired_text_padding_mask = self._text_prepro(unpaired_text_ori, self.unpaired_tokenizer_max_length)
                 unpaired_text = torch.from_numpy(unpaired_text).unsqueeze(0).to(model_device)
                 unpaired_text_padding_mask = torch.from_numpy(unpaired_text_padding_mask).unsqueeze(0).to(model_device)
-                with torch.enable_grad():
+                # with torch.enable_grad():
+                with torch.no_grad():
                     representation = self.M3AEmodel.forward_representation(image=None, text=unpaired_text, text_padding_mask=unpaired_text_padding_mask, deterministic=True)
             if new_matched_features.__len__()!=0:
                 assert representation.shape == new_matched_features[-1].shape
@@ -752,42 +811,44 @@ class UnifiedModel(nn.Module):
         return new_matched_features
 
     def gcn_forward_encoder(self, x, edge_index, edge_type):
+        # x : [14541, 320, 384] 6.65 G  edge_idnex [1200, 12000, 13000], [14000, 1200, 15000] [0, 1, 2], [3, 0, 4]
         x = self.dim_reduce1(x.transpose(-2, -1))
+        # x : [14541, 384, 1]
         x = x.view(x.shape[0], -1)
+        # x : [14541, 200]
         x = self.conv1(x, edge_index, edge_type)
         x = torch.relu(x)
         x = self.conv2(x, edge_index, edge_type)
         return x
     
     def forward(self, node_list, x, edge_index, edge_type, batch, deterministic=False):
+        device = self.get_model_device()
         image = batch['image']
         text = batch['text']
         text_padding_mask = batch['text_padding_mask']
-        unpaired_text = batch['unpaired_text']
-        unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
+        # unpaired_text = batch['unpaired_text']
+        # unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
         image_patches = extract_patches(image, self.patch_size)
 
         image_output, text_output, image_mask, text_mask = self.M3AEmodel(
             image_patches, 
             text, 
             text_padding_mask, 
-            deterministic)
-        if len(unpaired_text) != 0:
-            _, unpaired_text_output, _, unpaired_text_mask = self.M3AEmodel(
-                None,
-                unpaired_text,
-                unpaired_text_padding_mask,
-                deterministic
-            )
-        else:
-            unpaired_text_output, unpaired_text_mask = None, None
-            
-        x = x.to(self.get_model_device())
-        edge_index = edge_index.to(self.get_model_device())
-        edge_type = edge_type.to(self.get_model_device())
+            deterministic
+        )
+        # if len(unpaired_text) != 0:
+        #     _, unpaired_text_output, _, unpaired_text_mask = self.M3AEmodel(
+        #         None,
+        #         unpaired_text,
+        #         unpaired_text_padding_mask,
+        #         deterministic
+        #     )
+        # else:
+        #     unpaired_text_output, unpaired_text_mask = None, None
         new_features = self.get_unmasked_features(node_list)
         for node, new_feature in zip(node_list, new_features):
             x[node] = new_feature
+        x = x.to(device)
         x_ecd = self.gcn_forward_encoder(x, edge_index, edge_type) 
         #score = self.scoring_fn(x_ecd, edge_index, edge_type)
         batch_output = dict(
@@ -795,21 +856,11 @@ class UnifiedModel(nn.Module):
             text_output=text_output,
             image_mask=image_mask,
             text_mask=text_mask,
-            unpaired_text_output=unpaired_text_output,
-            unpaired_text_mask=unpaired_text_mask
+            # unpaired_text_output=unpaired_text_output,
+            # unpaired_text_mask=unpaired_text_mask
         )
 
         return x_ecd, batch_output
         
 
-if __name__ == '__main__':
-    import pickle
-    from data import MMKGDataset
-    graph_dataset = MMKGDataset(name='FB15K-237', root=f'./origin_data/FB15K-237')[0]
-    with open(os.path.join('./origin_data/FB15K-237', 'M3AE_embed.pkl'), 'rb') as fin:
-        m3ae_tokens = pickle.load(fin)
-    model = UnifiedModel('./origin_data/FB15K-237', m3ae_tokens, 400, 200, 237)
-    graph_dataset.x = model.multimodal_tokens
-    print(graph_dataset.x[graph_dataset.edge_index[0][:128]])
-    #x = model.forward_encoder(graph_dataset.x, graph_dataset.edge_index, graph_dataset.edge_type)
-    #print(x.shape)
+# if __name__ == '__main__':
