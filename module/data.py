@@ -10,7 +10,7 @@ import skimage.io
 import torch
 import torchvision
 import torch_geometric
-from torch_geometric.loader import NeighborLoader
+from torch_geometric.loader import NeighborSampler
 from torch_geometric.data import Data, Dataset
 import transformers
 from ml_collections import ConfigDict
@@ -537,11 +537,10 @@ class MMKGDataset(torch_geometric.data.Dataset):
             config.update(ConfigDict(updates).copy_and_resolve_references())
         return config
     
-    def __init__(self, config, train_file, name, root, device, transform=None, pre_transform=None):
+    def __init__(self, config, train_file, name, root, transform=None, pre_transform=None):
         self.config = self.get_default_config(config)
         self.name = name
         self.root = root
-        self.device = device
         self.train_file = train_file
         
         super().__init__(root, transform, pre_transform)
@@ -619,8 +618,8 @@ class MMKGDataset(torch_geometric.data.Dataset):
         
         # num_nodes = max(ent2id.values())
         # num_relations = max(rel2id.values())
-        edge_index = torch.tensor([[h, t] for h, _, t in triples], dtype= torch.long, device=self.device).t().contiguous()
-        edge_type = torch.tensor([r for _, r, _ in triples], dtype=torch.long, device=self.device)
+        edge_index = torch.tensor([[h, t] for h, _, t in triples], dtype= torch.long).t().contiguous()
+        edge_type = torch.tensor([r for _, r, _ in triples], dtype=torch.long)
 
         data = Data(edge_index=edge_index, edge_type=edge_type)
         #processed_path = os.path.join(self.processed_dir, self.processed_file_names[0])
@@ -717,12 +716,10 @@ class MMKGDataset(torch_geometric.data.Dataset):
         return tokenized_text, padding_mask
     
     def generate_batch(self, node_list):
-        sub_edge_index, sub_edge_type = subgraph(node_list, self.struc_dataset.edge_index.cpu(), self.struc_dataset.edge_type.cpu())
-
         batch_unprocessed_data = [self.mm_info[idx] for idx in node_list]
         mm_batch = defaultdict(list)
         #images, tokenized_texts, padding_masks, unpaired_texts, unpaired_text_padding_masks = list(), list(), list(), list(), list()
-        paired_nodes, unpaired_nodes = list(), list()
+        features = list()
         for node_info in batch_unprocessed_data:
             #assert len(node_info) == 2 or len(node_info) == 1
             if self.preprocessed == False:
@@ -730,22 +727,27 @@ class MMKGDataset(torch_geometric.data.Dataset):
                     image, text = node_info
                     image = self._image_prepro(image)
                     mm_batch['image'].append(image) 
+                    if self.config.image_only:
+                        features.append([image])
+                        continue
                     try:
                         text, text_padding_mask = self._text_prepro(text, self.config.tokenizer_max_length)
                         mm_batch['text'].append(text)
                         mm_batch['text_padding_mask'].append(text_padding_mask)
+                        features.append([image, text, text_padding_mask])
                     except:
                         text = self._text_prepro(text, self.config.tokenizer_max_length)
-                    paired_nodes.append([image, text])
+                        features.append([image, text])
                 else:
                     text = node_info[0]
                     try:
                         text, text_padding_mask = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
                         mm_batch['unpaired_text'].append(text)
                         mm_batch['unpaired_text_padding_mask'].append(text_padding_mask)
+                        features.append([text, text_padding_mask])
                     except:
                         text = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
-                    unpaired_nodes.append(node_info)
+                        features.append([text])
             else: 
                 if node_info.__len__() == 2:
                     text, text_padding_mask = node_info
@@ -757,13 +759,13 @@ class MMKGDataset(torch_geometric.data.Dataset):
                     mm_batch['text'].append(text)
                     mm_batch['text_padding_mask'].append(text_padding_mask) 
 
-        mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.float32, device=self.device)
-        mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32, device=self.device)
-        mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32, device=self.device)
-        mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32, device=self.device)
-        mm_batch['unpaired_text_padding_mask'] = torch.tensor(np.array(mm_batch['unpaired_text_padding_mask']), dtype=torch.float32, device=self.device)
-        return sub_edge_index, sub_edge_type, mm_batch
-
+        mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.float32)
+        mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32)
+        mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32)
+        mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32)
+        mm_batch['unpaired_text_padding_mask'] = torch.tensor(np.array(mm_batch['unpaired_text_padding_mask']), dtype=torch.float32)
+        return mm_batch, features
+    
 
 class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
     @staticmethod
@@ -804,6 +806,7 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         with open(os.path.join(self.root, 'MultiModalInfo.pkl'), 'rb') as fin:
             self.mm_info = pickle.load(fin)
         self.num_nodes = graph_dataset.num_nodes
+        self.graph_dataset = graph_dataset
         #self.triples, self.num_nodes = self._prepro(train_tasks)
 
         if self.config.image_normalization == 'imagenet':
@@ -843,6 +846,8 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         )
 
     def __getitem__(self, idx):
+        # select_node = idx % self.num_nodes
+        # sub_graph = NeighborLoader(self.graph_dataset, num_neighbors=[3, 3], input_nodes=torch.Tensor([select_node]).to(torch.long))
         triple = self.triples[idx]
         h, r, t = triple
         if self.mm_info[h].__len__() == 2:

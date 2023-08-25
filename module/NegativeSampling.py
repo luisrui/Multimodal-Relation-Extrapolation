@@ -208,7 +208,8 @@ class NegativeSampling(BaseModule):
 		device = self.get_model_device()
 		x_gcn, batch_output = self.model(
 			node_list, x, edge_index, edge_type, batch, deterministic)
-		edge_index_expand, edge_type_expand = self.neg_sample_fn(node_list, edge_index, edge_type)
+		mapped_node_list = torch.arange(torch.max(edge_index))
+		edge_index_expand, edge_type_expand = self.neg_sample_fn(mapped_node_list, edge_index, edge_type)
 		edge_index_expand = edge_index_expand.to(device)
 		edge_type_expand = edge_type_expand.to(device)
 		score = self.scoring_fn(x_gcn, edge_index_expand, edge_type_expand)
@@ -223,19 +224,19 @@ class NegativeSampling(BaseModule):
 		image = batch['image']
 		text = batch['text']
 		text_padding_mask = batch['text_padding_mask']
-		# unpaired_text = batch['unpaired_text']
-		# unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
+		unpaired_text = batch['unpaired_text']
+		unpaired_text_padding_mask = batch['unpaired_text_padding_mask']
 		image_output = batch_output['image_output']
 		image_mask = batch_output['image_mask']
 		text_output = batch_output['text_output']
 		text_mask= batch_output['text_mask']
-		# unpaired_text_output = batch_output['unpaired_text_output']
-		# unpaired_text_mask = batch_output['unpaired_text_mask']
+		unpaired_text_output = batch_output['unpaired_text_output']
+		unpaired_text_mask = batch_output['unpaired_text_mask']
 		image_patches = extract_patches(image, self.args.patch_size)
 		# Forward Propogation
 		#Missing discretized image optimization
 		image_loss = patch_mse_loss(
-			image_output, image_patches.to(device),
+			image_output, image_patches,
 			None if self.args.image_all_token_loss else image_mask
 		)
 		text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
@@ -245,21 +246,21 @@ class NegativeSampling(BaseModule):
 				mask_not(text_padding_mask).to(device)
 			)
 		)
-		# if unpaired_text_output is not None:
-		# 	unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
-		# 		unpaired_text_output, unpaired_text,
-		# 		mask_intersection(
-		# 			all_mask(unpaired_text) if self.args.text_all_token_loss else unpaired_text_mask,
-		# 			mask_not(unpaired_text_padding_mask)
-		# 		)
-		# 	)
-		# else:
-		# 	unpaired_text_loss = 0
+		if unpaired_text_output is not None:
+			unpaired_text_loss, unpaired_text_accuracy = cross_entropy_loss_and_accuracy(
+				unpaired_text_output, unpaired_text,
+				mask_intersection(
+					all_mask(unpaired_text) if self.args.text_all_token_loss else unpaired_text_mask,
+					mask_not(unpaired_text_padding_mask)
+				)
+			)
+		else:
+			unpaired_text_loss = 0
 
 		loss_image_text = (
 			self.args.image_loss_weight * image_loss
 			+ self.args.text_loss_weight * text_loss
-			# + self.args.unpaired_text_loss_weight * unpaired_text_loss
+			+ self.args.unpaired_text_loss_weight * unpaired_text_loss
 		)
 		
 		loss = loss_image_text + self.args.gcn_part_loss * loss_res_gcn
@@ -268,7 +269,7 @@ class NegativeSampling(BaseModule):
 			loss_image_text=loss_image_text,
 			image_loss=image_loss,
 			text_loss=text_loss,
-			# unpaired_text_loss=unpaired_text_loss
+			unpaired_text_loss=unpaired_text_loss
 		)
 		return loss, info
 	
