@@ -503,6 +503,26 @@ class TextDataset(torch.utils.data.Dataset):
     def vocab_size(self):
         return self.tokenizer.vocab_size
 
+class TripleDataset(torch.utils.data.Dataset):
+    def __init__(self, root, filename):
+        self.json_file = json.load(open(os.path.join(root, filename)))
+        self.triples = self._prepro()
+
+    def __getitem__(self, idx):
+        return self.triples[idx]
+    
+    def __len__(self):
+        return len(self.triples)
+    
+    def _prepro(self):
+        ent2id = json.load(open(os.path.join(self.root, 'entity2ids.json')))
+        rel2id = json.load(open(os.path.join(self.root, 'relation2ids_allrel.json')))
+        triples = list()
+        for rel in self.json_file.keys():
+            for triple in self.json_file[rel]:
+                h, r, t = triple
+                triples.append([ent2id[h], rel2id[r], ent2id[t]])
+        return triples
 
 class MMKGDataset(torch_geometric.data.Dataset):
     @staticmethod
@@ -584,7 +604,6 @@ class MMKGDataset(torch_geometric.data.Dataset):
             self.mm_info = pickle.load(fin)
 
         self.struc_dataset = self.get(0)
-        self.preprocessed = False
         #self._multimodal_prepro()
 
     @property
@@ -689,9 +708,9 @@ class MMKGDataset(torch_geometric.data.Dataset):
             image = rgba2rgb(image)
 
         image = (
-            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
+            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0)
         )
-        image = image.astype(np.float32)
+        # image = image.astype(np.float32)
 
         return image
     
@@ -718,53 +737,49 @@ class MMKGDataset(torch_geometric.data.Dataset):
     def generate_batch(self, node_list):
         batch_unprocessed_data = [self.mm_info[idx] for idx in node_list]
         mm_batch = defaultdict(list)
-        #images, tokenized_texts, padding_masks, unpaired_texts, unpaired_text_padding_masks = list(), list(), list(), list(), list()
-        features = list()
+        #features = list()
         for node_info in batch_unprocessed_data:
             #assert len(node_info) == 2 or len(node_info) == 1
-            if self.preprocessed == False:
-                if node_info.__len__() == 2:
-                    image, text = node_info
-                    image = self._image_prepro(image)
-                    mm_batch['image'].append(image) 
-                    if self.config.image_only:
-                        features.append([image])
-                        continue
-                    try:
-                        text, text_padding_mask = self._text_prepro(text, self.config.tokenizer_max_length)
-                        mm_batch['text'].append(text)
-                        mm_batch['text_padding_mask'].append(text_padding_mask)
-                        features.append([image, text, text_padding_mask])
-                    except:
-                        text = self._text_prepro(text, self.config.tokenizer_max_length)
-                        features.append([image, text])
-                else:
-                    text = node_info[0]
-                    try:
-                        text, text_padding_mask = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
-                        mm_batch['unpaired_text'].append(text)
-                        mm_batch['unpaired_text_padding_mask'].append(text_padding_mask)
-                        features.append([text, text_padding_mask])
-                    except:
-                        text = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
-                        features.append([text])
-            else: 
-                if node_info.__len__() == 2:
-                    text, text_padding_mask = node_info
-                    mm_batch['unpaired_text'].append(text)
-                    mm_batch['unpaired_text_padding_mask'].append(text_padding_mask)
-                elif node_info.__len__() == 3:
-                    image, text, text_padding_mask = node_info
-                    mm_batch['image'].append(image)
-                    mm_batch['text'].append(text)
-                    mm_batch['text_padding_mask'].append(text_padding_mask) 
+            if node_info.__len__() == 2:
+                image_ori, text_ori = node_info
+                image = self._image_prepro(image_ori)
+            else:
+                text_ori = node_info[0]
+                image = torch.empty(self.config.image_size, self.config.image_size, 3)
+                torch.nn.init.xavier_uniform_(image)
+                image *= 10
+            mm_batch['image'].append(image)
+            if self.config.image_only:
+                #features.append([image])
+                continue
 
-        mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.float32)
+            try:
+                text, text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
+                mm_batch['text'].append(text)
+                mm_batch['text_padding_mask'].append(text_padding_mask)
+                #features.append([image, text, text_padding_mask])
+            except:
+                mm_batch['text'].append(text_ori)
+                #features.append([image, text])
+            # else:
+            #     text = node_info[0]
+            #     image = torch.nn.xavier_uniform(torch.empty(self.config.image_size, self.config.image_size, 3)) * 10
+            #     mm_batch['image'].append(image) 
+            #     try:
+            #         text, text_padding_mask = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
+            #         mm_batch['unpaired_text'].append(text)
+            #         mm_batch['unpaired_text_padding_mask'].append(text_padding_mask)
+            #         features.append([image, text, text_padding_mask])
+            #     except:
+            #         text = self._text_prepro(text, self.config.unpaired_tokenizer_max_length)
+            #         features.append([image, text])
+
+        mm_batch['image'] = torch.stack(mm_batch['image'], dim = 0).to(torch.float32)
         mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32)
         mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32)
-        mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32)
-        mm_batch['unpaired_text_padding_mask'] = torch.tensor(np.array(mm_batch['unpaired_text_padding_mask']), dtype=torch.float32)
-        return mm_batch, features
+        # mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32)
+        # mm_batch['unpaired_text_padding_mask'] = torch.tensor(np.array(mm_batch['unpaired_text_padding_mask']), dtype=torch.float32)
+        return mm_batch
     
 
 class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
