@@ -101,7 +101,7 @@ class NegativeSampling(BaseModule):
 			self.cross_sampling_flag = 0
 		
 		self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
-		self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
+		#self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
 		h, r, t = whole_triples
 		self.__count_htr(h, r, t)
 
@@ -147,8 +147,10 @@ class NegativeSampling(BaseModule):
 		# 	self.rig_mean[r] = self.freqRel[r] / len(self.t_of_r[r])
 	
 	def scoring_fn(self, local_global_id, x, edge_index, edge_type):
+		#batch_head = self.ent_embedding(self._global_mapping(local_global_id, edge_index[0]).to(self.get_model_device()))
 		batch_head = x[edge_index[0].long()]
-		batch_tail = self.ent_embedding(self._global_mapping(local_global_id, edge_index[1]).to(self.get_model_device()))
+		#batch_tail = self.ent_embedding(self._global_mapping(local_global_id, edge_index[1]).to(self.get_model_device()))
+		batch_tail = x[edge_index[1].long()]
 		batch_rel = self.rel_embedding(edge_type)
 		score = self._calc(batch_head, batch_tail, batch_rel)
 		return score
@@ -156,7 +158,7 @@ class NegativeSampling(BaseModule):
 	def get_model_device(self):
 		return next(self.parameters()).device
 	
-	def _calc(self, h, t, r, mode='normal', score_model='transe'):
+	def _calc(self, h, t, r, mode='normal', score_model='distmult'):
 		if score_model == 'transe':
 			if self.score_norm_flag:
 				h = F.normalize(h, 2, -1)
@@ -184,7 +186,6 @@ class NegativeSampling(BaseModule):
 			score = torch.sum(score, -1).flatten()
 			return score
 		
-
 	def _global_mapping(self, local_global_id:dict, tranfer_list:torch.tensor):
 		return torch.tensor([local_global_id[i.item()] for i in tranfer_list])
 	
@@ -285,6 +286,9 @@ class NegativeSampling(BaseModule):
 			loss_image_text=loss_image_text,
 			image_loss=image_loss,
 			text_loss=text_loss
+			# loss_image_text=0,
+			# image_loss=0,
+			# text_loss=0
 		)
 		return loss, info
 	

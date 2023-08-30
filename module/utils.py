@@ -7,6 +7,67 @@ import pickle
 from tqdm.auto import trange
 from collections import defaultdict
 
+# @title Model size config
+def get_transformer_by_config(model_type, config):
+    if model_type == 'small':
+        config.emb_dim = 384
+        config.dec_emb_dim = 512
+        config.depth = 12
+        config.dec_depth = 8
+        config.num_heads = 6
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'base':
+        config.emb_dim = 768
+        config.dec_emb_dim = 512
+        config.depth = 12
+        config.dec_depth = 8
+        config.num_heads = 12
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'large':
+        config.emb_dim = 1024
+        config.dec_emb_dim = 512
+        config.depth = 24
+        config.dec_depth = 8
+        config.num_heads = 16
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'huge':
+        config.emb_dim = 1280
+        config.dec_emb_dim = 512
+        config.depth = 32
+        config.dec_depth = 8
+        config.num_heads = 16
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'debug':
+        config.emb_dim = 1024
+        config.dec_emb_dim = 512
+        config.depth = 2
+        config.dec_depth = 2
+        config.num_heads = 16
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'tiny':
+        config.emb_dim = 384
+        config.dec_emb_dim = 512
+        config.depth = 2
+        config.dec_depth = 2
+        config.num_heads = 6
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    elif model_type == 'tiny4':
+        config.emb_dim = 384
+        config.dec_emb_dim = 512
+        config.depth = 4
+        config.dec_depth = 4
+        config.num_heads = 6
+        config.dec_num_heads = 16
+        config.mlp_ratio = 4
+    else:
+        raise ValueError('Unsupported model type!')
+
 def set_random_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)

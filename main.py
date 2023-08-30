@@ -1,5 +1,5 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '6'
+#os.environ['CUDA_VISIBLE_DEVICES'] = '6'
 #os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
 #os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 from os import path as osp
@@ -13,17 +13,12 @@ from collections import deque
 import numpy as np
 import itertools
 import json
+import pickle
 
 from args import read_options
-from module.utils import (
-    set_random_seed, generate_m3ae_embed, generate_batchdata
-)
-from module.model import (
-    UnifiedModel
-)
-from module.data import (
-    MMKGDataset, TripleDataset
-)
+from module.utils import (set_random_seed, generate_m3ae_embed, generate_batchdata)
+from module.model import UnifiedModel
+from module.data import MMKGDataset
 from module.NegativeSampling import NegativeSampling
 from module.loss import MarginLoss
 
@@ -32,46 +27,53 @@ def main(args):
     set_random_seed(args.seed)
     # Instantiation of multimodal Graph Dataset
     data_path = osp.join('./origin_data', args.dataset)
-
-    print('Start dataset preprocessing!')
-    e_id = json.load(open(os.path.join(data_path, 'entity2ids.json')))
-    r_id = json.load(open(os.path.join(data_path, 'relation2ids_allrel.json')))
+    e_id = json.load(open(os.path.join(data_path, 'entity2ids_clear.json')))
+    r_id = json.load(open(os.path.join(data_path, 'relation2ids_clear.json')))
     with open(os.path.join(data_path, 'train.tsv'), 'r') as f:
         h, r, t = list(), list(), list()
         for line in f.readlines():
             head, rel, tail = line[:-1].split('\t')
-            h.append(e_id[head])
-            r.append(r_id[rel])
-            t.append(e_id[tail])
+            if head in e_id.keys() and tail in e_id.keys() and rel in r_id.keys():
+                h.append(e_id[head])
+                r.append(r_id[rel])
+                t.append(e_id[tail])
         triples = [h, r, t]
-    graph_train_dataset = MMKGDataset(
-        config=MMKGDataset.get_default_config(),
-        train_file='train_tasks_all.json',
-        name=args.dataset,  
-        root=data_path, 
-    )
-    print('Finish dataset preprocessing!')
-
-    print('Start Model Instantiation!')
-    part_model = UnifiedModel(
-        args=args,
-        mm_info=graph_train_dataset.mm_info,
-        hidden_channels=200,
-        dataset=graph_train_dataset,
-        num_relations=237
-    )
+    with open(os.path.join(data_path, 'MultiModalInfo_clear.pkl'), 'rb') as f:
+        mm_info = pickle.load(f)
 
     if not args.evaluate:
+        print('Start dataset preprocessing!')
+        graph_train_dataset = MMKGDataset(
+            config=MMKGDataset.get_default_config(),
+            train_file='train_tasks_clear.json',
+            name=args.dataset,  
+            root=data_path,
+            mode='train',
+            mm_info=mm_info,
+        )
+        print('Entity Number:', graph_train_dataset.num_nodes)
+        print('Finish dataset preprocessing!')
+
+        print('Start Model Instantiation!')
+        part_model = UnifiedModel(
+            args=args,
+            hidden_channels=200,
+            dataset=graph_train_dataset,
+            num_relations=235
+        )
         model = NegativeSampling(
             args = args,
             whole_triples=triples,
             model= part_model,
-            loss_fn = MarginLoss(margin=10.0),
+            loss_fn = MarginLoss(margin=3.0),
             neg_rel = 0,
             neg_ent = 1,
             sampling_mode = 'normal'
         ).to(device)
-        print('Fisish Model Instantiation!')
+        if args.load_from_pretrained:
+            print('Loading pretrained model')
+            model.load_checkpoint(f"./saved_models/{args.saved_model_name}.ckpt")
+        print('Finish Model Instantiation!')
 
         graph = graph_train_dataset.get_struc_dataset()
         dataloader = NeighborSampler(
@@ -111,8 +113,6 @@ def main(args):
             batch_data['image'] = batch_data['image'].to(device)
             batch_data['text'] = batch_data['text'].to(device)
             batch_data['text_padding_mask'] = batch_data['text_padding_mask'].to(device)
-            # batch_data['unpaired_text'] = batch_data['unpaired_text'].to(device)
-            # batch_data['unpaired_text_padding_mask'] = batch_data['unpaired_text_padding_mask'].to(device)
             optimizer.zero_grad()
             loss, info = model(
                 local_global_id={k: v.item() for k, v in zip(range(len(n_id)), n_id)},
@@ -120,7 +120,6 @@ def main(args):
                 edge_type=graph.edge_type[adjs.e_id], 
                 batch=batch_data
                 )
-            #loss, info = first_fusion_train(model, batch, args)
             loss = loss.to(device)
             loss.backward()
             optimizer.step()
@@ -138,28 +137,19 @@ def main(args):
                 scheduler.step()
         
         print('Finish Training\n')
-        model.save_checkpoint(f"./saved_models/Unimodal_{args.dataset}.ckpt")
+        model.save_checkpoint(f"./saved_models/{args.saved_model_name}.ckpt")
     
     else:
         hits_at_k = [1, 5, 10]
-        model = NegativeSampling(
-            args = args,
-            whole_triples=triples,
-            model= part_model,
-            loss_fn = MarginLoss(margin=10.0),
-            neg_rel = 0,
-            neg_ent = 50, #building test candidates
-            sampling_mode = 'normal'
-        ).to(device)
-        model.load_checkpoint(f"./saved_models/Unimodal_{args.dataset}.ckpt")
-        print('Finish model Instantiation!')
-        
+
         print('Start dataset preprocessing!')
         graph_test_dataset = MMKGDataset(
             config=MMKGDataset.get_default_config(),
-            train_file='test_tasks_all.json',
+            train_file='test_tasks_clear.json',
             name=args.dataset,  
             root=data_path, 
+            mode='test',
+            mm_info=mm_info
         )
         test_graph = graph_test_dataset.get_struc_dataset()
         test_dataloader = NeighborSampler(
@@ -171,6 +161,24 @@ def main(args):
         )
         print('Finish dataset preprocessing!')
 
+        part_model = UnifiedModel(
+            args=args,
+            hidden_channels=200,
+            dataset=graph_test_dataset,
+            num_relations=235
+        )
+        model = NegativeSampling(
+            args = args,
+            whole_triples=triples,
+            model= part_model,
+            loss_fn = MarginLoss(margin=10.0),
+            neg_rel = 0,
+            neg_ent = 50, #building test candidates
+            sampling_mode = 'normal'
+        ).to(device)
+        model.load_checkpoint(f"./saved_models/{args.saved_model_name}.ckpt")
+        print('Finish model Instantiation!')
+
         print('Start evaluation!\n')
         model.eval()
         ranks = []
@@ -178,7 +186,7 @@ def main(args):
         step_counter = trange(0, len(test_dataloader), ncols=0)
         for step, data in zip(step_counter, test_dataloader):
             batch_size, n_id, adjs = data
-            batch_data = graph_train_dataset.generate_batch(n_id)
+            batch_data = graph_test_dataset.generate_batch(n_id)
             batch_data['image'] = batch_data['image'].to(device)
             batch_data['text'] = batch_data['text'].to(device)
             batch_data['text_padding_mask'] = batch_data['text_padding_mask'].to(device)
@@ -189,12 +197,13 @@ def main(args):
                     edge_type=test_graph.edge_type[adjs.e_id], 
                     batch=batch_data
                     )
-                raw_ranks = torch.sum(n_score > p_score, dim=1, dtype=torch.long)
+                raw_ranks = torch.sum(n_score < p_score, dim=1, dtype=torch.long)
                 num_ties = torch.sum(n_score == p_score, dim=1, dtype=torch.long)
-                branks = raw_ranks + (num_ties - 1) // 2
+                branks = raw_ranks + num_ties // 2
                 ranks.extend((branks + 1).tolist())
-            temp_rank = branks + 1
-            step_counter.set_description("Step %d | temp_mrr: %.4f " % (step, sum([1.0/rank for rank in temp_rank]) / len(temp_rank)))
+            temp_rank = (branks + 1).tolist()
+            temp_mrr = sum([1.0/rank for rank in temp_rank]) / len(temp_rank)
+            step_counter.set_description("Step %d | temp_mrr: %f " % (step, temp_mrr))
 
         mrr = sum([1.0/rank for rank in ranks])/len(ranks)
         hits = []
