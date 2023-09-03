@@ -69,7 +69,8 @@ class NegativeSampling(BaseModule):
 			whole_triples,
 			model = None,
 			loss_fn = None, 
-			regul_rate = 0.5, 
+			regul_rate = 0.0, 
+			l3_regul_rate = 0.0,
 			neg_rel = 0, 
 			neg_ent = 1, 
 			sampling_mode = "normal",
@@ -83,6 +84,7 @@ class NegativeSampling(BaseModule):
 		self.model = model
 		self.loss_fn = loss_fn
 		self.regul_rate = regul_rate
+		self.l3_regul_rate = l3_regul_rate
 
 		#sample configs
 		self.rel_total = self.model.num_relations if model is not None else 237
@@ -99,7 +101,7 @@ class NegativeSampling(BaseModule):
 			self.cross_sampling_flag = 0
 		
 		self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
-		#self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
+		self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
 		h, r, t = whole_triples
 		self.__count_htr(h, r, t)
 
@@ -145,10 +147,10 @@ class NegativeSampling(BaseModule):
 		# 	self.rig_mean[r] = self.freqRel[r] / len(self.t_of_r[r])
 	
 	def scoring_fn(self, local_global_id, x, edge_index, edge_type):
-		#batch_head = self.ent_embedding(self._global_mapping(local_global_id, edge_index[0]).to(self.get_model_device()))
-		batch_head = x[edge_index[0].long()]
-		#batch_tail = self.ent_embedding(self._global_mapping(local_global_id, edge_index[1]).to(self.get_model_device()))
-		batch_tail = x[edge_index[1].long()]
+		batch_head = self.ent_embedding(self._global_mapping(local_global_id, edge_index[0]).to(self.get_model_device()))
+		#batch_head = x[edge_index[0].long()]
+		batch_tail = self.ent_embedding(self._global_mapping(local_global_id, edge_index[1]).to(self.get_model_device()))
+		#batch_tail = x[edge_index[1].long()]
 		batch_rel = self.rel_embedding(edge_type)
 		score = self._calc(batch_head, batch_tail, batch_rel)
 		return score
@@ -215,6 +217,9 @@ class NegativeSampling(BaseModule):
 			batch_t = batch_t_sample.transpose()
 			batch_r = batch_r_sample.transpose()
 
+		#batch_y = np.concatenate([np.ones((len_triples, 1)), np.zeros((len_triples, self.neg_ent + self.neg_rel))], -1).transpose()
+		# expand_edge_h = torch.tensor(batch_h.squeeze().flatten())
+		# expand_edge_t = torch.tensor(batch_t.squeeze().flatten())
 		expand_edge_index = torch.tensor(np.array([batch_h.squeeze().flatten(), batch_t.squeeze().flatten()]), dtype=torch.int32)
 		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int32)
 		return expand_edge_index, expand_edge_type
@@ -230,10 +235,12 @@ class NegativeSampling(BaseModule):
 		return negative_score
 	
 	#Computing the loss of the whole model
-	def forward(self, local_global_id, edge_index, edge_type, batch, deterministic=False):
+	def forward(self, node_list, local_global_id, edge_index, edge_type, batch, deterministic=False):
 		device = self.get_model_device()
-		x_gcn, batch_output = self.model(
-			edge_index, edge_type, batch, deterministic)
+		# x_gcn, batch_output = self.model(
+		# 	edge_index, edge_type, batch, deterministic)
+		x = self.ent_embedding(node_list)
+		x_gcn = self.model.gcn_forward_encoder(x, edge_index, edge_type)
 		mapped_node_list = torch.arange(torch.max(edge_index))
 		edge_index_expand, edge_type_expand = self.neg_sample_fn(local_global_id, mapped_node_list, edge_index, edge_type)
 		edge_index_expand = edge_index_expand.to(device)
@@ -242,72 +249,66 @@ class NegativeSampling(BaseModule):
 		pos_score = self._get_positive_score(score, len(edge_type))
 		neg_score = self._get_negative_score(score, len(edge_type))
 		loss_res_gcn = self.loss_fn(pos_score, neg_score)
-		if self.regul_rate != 0:
-			loss_res_gcn += self.regul_rate * self.regularization(x_gcn, edge_index_expand, edge_type_expand)
+		# if self.regul_rate != 0:
+		# 	loss_res += self.regul_rate * self.model.regularization(data)
+		# if self.l3_regul_rate != 0:
+		# 	loss_res += self.l3_regul_rate * self.model.l3_regularization()
 
-		image = batch['image']
-		text = batch['text']
-		text_padding_mask = batch['text_padding_mask']
-		image_output = batch_output['image_output']
-		image_mask = batch_output['image_mask']
-		text_output = batch_output['text_output']
-		text_mask= batch_output['text_mask']
+		# image = batch['image']
+		# text = batch['text']
+		# text_padding_mask = batch['text_padding_mask']
+		# image_output = batch_output['image_output']
+		# image_mask = batch_output['image_mask']
+		# text_output = batch_output['text_output']
+		# text_mask= batch_output['text_mask']
 
-		image_patches = extract_patches(image, self.args.patch_size)
-		# Forward Propogation
-		#Missing discretized image optimization
-		image_loss = patch_mse_loss(
-			image_output, image_patches,
-			None if self.args.image_all_token_loss else image_mask
-		)
-		text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
-			text_output, text,  
-			mask_intersection(
-				all_mask(text) if self.args.text_all_token_loss else text_mask,
-				mask_not(text_padding_mask).to(device)
-			)
-		)
+		# image_patches = extract_patches(image, self.args.patch_size)
+		# # Forward Propogation
+		# #Missing discretized image optimization
+		# image_loss = patch_mse_loss(
+		# 	image_output, image_patches,
+		# 	None if self.args.image_all_token_loss else image_mask
+		# )
+		# text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
+		# 	text_output, text,  
+		# 	mask_intersection(
+		# 		all_mask(text) if self.args.text_all_token_loss else text_mask,
+		# 		mask_not(text_padding_mask).to(device)
+		# 	)
+		# )
 
-		loss_image_text = (
-			self.args.image_loss_weight * image_loss
-			+ self.args.text_loss_weight * text_loss
-		)
+		# loss_image_text = (
+		# 	self.args.image_loss_weight * image_loss
+		# 	+ self.args.text_loss_weight * text_loss
+		# )
 		
-		loss = loss_image_text + self.args.gcn_loss_weight * loss_res_gcn
+		#loss = loss_image_text + self.args.gcn_loss_weight * loss_res_gcn
+		loss = loss_res_gcn
 		info = dict(
 			struc_loss=loss_res_gcn,
-			loss_image_text=loss_image_text,
-			image_loss=image_loss,
-			text_loss=text_loss
+			# loss_image_text=loss_image_text,
+			# image_loss=image_loss,
+			# text_loss=text_loss
+			loss_image_text=0,
+			image_loss=0,
+			text_loss=0
 		)
 		return loss, info
 	
-	def evaluate(self, local_global_id, batch_size, edge_index_expand, edge_type_expand, batch, deterministic=True):
+	def evaluate(self, node_list, local_global_id, edge_index, edge_type, batch, deterministic=True):
 		device = self.get_model_device()
-		edge_index = edge_index_expand[:, :batch_size].to(device)
-		edge_type = edge_type_expand[:batch_size].to(device)
-		x_gcn = self.model(
-			edge_index, edge_type, batch, deterministic)
+		# x_gcn = self.model(
+		# 	edge_index, edge_type, batch, deterministic)
+		x = self.ent_embedding(node_list)
+		x_gcn = self.model.gcn_forward_encoder(x, edge_index, edge_type)
+		mapped_node_list = torch.arange(torch.max(edge_index))
+		edge_index_expand, edge_type_expand = self.neg_sample_fn(local_global_id, mapped_node_list, edge_index, edge_type)
 		edge_index_expand = edge_index_expand.to(device)
 		edge_type_expand = edge_type_expand.to(device)
 		score = self.scoring_fn(local_global_id, x_gcn, edge_index_expand, edge_type_expand)
-		pos_score = self._get_positive_score(score, batch_size)
-		neg_score = self._get_negative_score(score, batch_size)
+		pos_score = self._get_positive_score(score, len(edge_type))
+		neg_score = self._get_negative_score(score, len(edge_type))
 		return pos_score, neg_score
-
-	def regularization(self, x, edge_index, edge_type):
-		batch_head = x[edge_index[0].long()]
-		batch_tail = x[edge_index[1].long()]
-		batch_rel = self.rel_embedding(edge_type)
-		regul = (torch.mean(batch_head ** 2) + 
-                 torch.mean(batch_tail ** 2) + 
-                 torch.mean(batch_rel ** 2)) / 3
-		return regul
-
-	def generate_eval_list(self, local_global_id, edge_index, edge_type):
-		mapped_node_list = torch.arange(torch.max(edge_index))
-		edge_index_expand, edge_type_expand = self.neg_sample_fn(local_global_id, mapped_node_list, edge_index, edge_type)
-		return edge_index_expand, edge_type_expand
 	
 	def __normal_batch(self, local_global_id, node_list, h, t, r, neg_size):
 		neg_size_h = 0
@@ -338,7 +339,7 @@ class NegativeSampling(BaseModule):
 			neg_list_t = np.concatenate(neg_list_t)
 
 		return neg_list_h[:neg_size_h], neg_list_t[:neg_size_t]
-	  
+	
 	def __rel_batch(self, local_global_id, h, t, r, neg_size):
 		neg_list = []
 		neg_cur_size = 0
