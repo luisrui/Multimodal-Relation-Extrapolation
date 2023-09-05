@@ -9,10 +9,12 @@ from torch.autograd import Variable
 from torch.utils import data
 from collections import Counter
 import torch.optim as optim
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import ctypes
 import pickle
-from dataloader import TrainDataLoader, TestDataLoader
+from dataloader.PyTorchTrainDataLoader import PyTorchTrainDataLoader
+from args import read_options
+import json
 
 RES = 'result.txt'
 
@@ -302,7 +304,7 @@ class Tester(object):
 class IMG_Encoder(nn.Module):
     def __init__(self, embedding_dim = 4096, dim = 200, margin = None, epsilon = None):
         super(IMG_Encoder, self).__init__()
-        with open('./data/OpenBG-IMG/entity2id.txt') as fp:
+        with open('./data/FB15K-237/entity2id.txt') as fp:
             entity2id = fp.readlines()[1:]
             entity2id = [i.split('\t')[0] for i in entity2id]
 
@@ -348,8 +350,8 @@ class IMG_Encoder(nn.Module):
             # print(index, entity)
             try:
                 entity_ = entity.replace('/', '.')
-                
-                with open("./data/OpenBG-IMG/img_em/" + entity_ + "/avg_embedding.pkl", "rb") as visef:
+                entity_ = entity_[1:]
+                with open("./data/FB15K-237/img_em/" + entity_ + "/avg_embedding.pkl", "rb") as visef:
                     embed = embed+1
                     em = pickle.load(visef)
                     weights[index] = em
@@ -627,50 +629,122 @@ class NegativeSampling(nn.Module):
             loss_res += self.l3_regul_rate * self.model.l3_regularization()
         return loss_res
 
-data_path = "./data/OpenBG-IMG/"
+    def evaluate(self, batch_size, data):
+        self.batch_size = batch_size
+        score = self.model(data)
+        p_score = self._get_positive_score(score)
+        n_score = self._get_negative_score(score)
+        return p_score, n_score
 
-train_dataloader = TrainDataLoader(
-    in_path = data_path, 
-    nbatches = 100,
-    threads = 8, 
-    sampling_mode = "normal", 
-    bern_flag = 1, 
-    filter_flag = 1, 
-    neg_ent = 25,
-    neg_rel = 25)
+if __name__ == '__main__':
+    
+    args = read_options()
+    dataset = args.dataset
+    data_path = f"./data/{dataset}/"
 
-# dataloader for test
-test_dataloader = TestDataLoader(data_path, "link")
+    train_dataloader = PyTorchTrainDataLoader(
+        in_path = data_path, 
+        nbatches = 300,
+        threads = 8, 
+        sampling_mode = "normal", 
+        bern_flag = 1, 
+        filter_flag = 1, 
+        neg_ent = 25,
+        neg_rel = 25
+    )
 
-with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
-    ents_count = int(fp.readline()[:-1])
+    # dataloader for test
+    #test_dataloader = TestDataLoader(data_path, "link")
 
-with open(os.path.join(data_path, 'relation2id.txt'), 'r') as fp:
-    rels_count = int(fp.readline()[:-1])
+    with open(os.path.join(data_path, 'entity2id.txt'), 'r') as fp:
+        ents_count = int(fp.readline()[:-1])
 
-# define the model
-transe = TransE(
-    ent_tot = ents_count,
-    rel_tot = rels_count,
-    dim = 200, 
-    p_norm = 1, 
-    norm_flag = True)
+    with open(os.path.join(data_path, 'relation2id.txt'), 'r') as fp:
+        rels_count = int(fp.readline()[:-1])
 
-model = NegativeSampling(
-    model = transe, 
-    loss = MarginLoss(margin = 5.0),
-    batch_size = train_dataloader.get_batch_size()
-)
+    # define the model
+    transe = TransE(
+        ent_tot = ents_count,
+        rel_tot = rels_count,
+        dim = 200, 
+        p_norm = 1, 
+        norm_flag = True)
 
-if not os.path.exists('./checkpoints'):
-    os.mkdir('./checkpoints/')
+    model = NegativeSampling(
+        model = transe, 
+        loss = MarginLoss(margin = 5.0),
+        batch_size = train_dataloader.get_batch_size()
+    )
 
-# train the model
-trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
-trainer.run()
-transe.save_checkpoint('./checkpoints/OpenBG-IMG.ckpt')
+    if not os.path.exists('./checkpoints'):
+        os.mkdir('./checkpoints/')
 
-# test the model
-transe.load_checkpoint('./checkpoints/OpenBG-IMG.ckpt')
-tester = Tester(model = transe, data_loader = test_dataloader, use_gpu = True)
-tester.run_link_prediction(type_constrain = False)
+    if not args.evaluate:
+        # train the model
+        trainer = Trainer(model = model, data_loader = train_dataloader, train_times = 1000, alpha = 1.0, use_gpu = True)
+        trainer.run()
+        transe.save_checkpoint(f'./checkpoints/{dataset}.ckpt')
+
+    else:
+        hits_at_k = [1, 3, 7]
+
+        src_data_path = f"../origin_data/{args.dataset}/"
+        transe.load_checkpoint('./checkpoints/FB15K-237.ckpt')
+        model = NegativeSampling(
+            model = transe, 
+            loss = MarginLoss(margin = 5.0),
+            batch_size = train_dataloader.get_batch_size()
+        )
+        print('Finish model Instantiation!')
+
+        #Load test info
+        print('Start load test dataset!')
+        with open(os.path.join(src_data_path, 'test/sub_test_samples.json'), 'r') as f:
+            test_tasks = json.load(f)
+        print('Finish load test dataset!')
+
+        print('Start evaluation!\n')
+        model.eval()
+        ranks = []
+        step_counter = trange(0, len(test_tasks), ncols=0)
+        for step in step_counter:
+            data = test_tasks[str(step)]
+            batch_size, n_id, edge_index_expand, edge_type_expand = (
+                data['batch_size'], data['n_id'], data['edge_index_expand'], data['edge_type_expand'])
+            n_id = torch.tensor(np.array(n_id), dtype=torch.int32)
+            local_global_id={k: v.item() for k, v in zip(range(len(n_id)), n_id)}
+            data_h = torch.tensor([local_global_id[h] for h in edge_index_expand[0]], dtype=torch.int64)
+            data_t = torch.tensor([local_global_id[t] for t in edge_index_expand[1]], dtype=torch.int64)
+            edge_type_expand = torch.tensor(np.array(edge_type_expand), dtype=torch.int64)
+            batch_data = {
+                'batch_h':data_h,
+                'batch_t':data_t,
+                'batch_r':edge_type_expand,
+                'mode':'normal'
+            }
+            with torch.no_grad():
+                p_score, n_score = model.evaluate(
+                    batch_size=batch_size,
+                    data=batch_data
+                    )
+                raw_ranks = torch.sum(n_score < p_score, dim=1, dtype=torch.long)
+                num_ties = torch.sum(n_score == p_score, dim=1, dtype=torch.long)
+                branks = raw_ranks + num_ties // 2
+                ranks.extend((branks + 1).tolist())
+            temp_rank = (branks + 1).tolist()
+            temp_mrr = sum([1.0/rank for rank in temp_rank]) / len(temp_rank)
+            step_counter.set_description("Step %d | temp_mrr: %f " % (step, temp_mrr))
+
+        mrr = sum([1.0/rank for rank in ranks])/len(ranks)
+        hits = []
+        for k in hits_at_k:
+            hits.append(sum([1.0 if rank <= k else 0.0 for rank in ranks]) / len(ranks))
+        hits_at_1, hits_at_3, hits_at_7 = hits
+        print(f'[Final Scores] '
+              f'MRR: {mrr} \t'
+              f'Hits@1: {hits_at_1} \t'
+              f'Hits@3: {hits_at_3} \t'
+              f'Hits@7: {hits_at_7}')
+
+        print('Finish evaluation!\n')
+
