@@ -132,9 +132,10 @@ def get_1d_sincos_pos_embed(embed_dim, length):
     pos_embed = torch.unsqueeze(pos_embed, 0)
     return pos_embed
 
-def get_2d_sincos_pos_embed(embed_dim, length):
-    grid_size = int(length ** 0.5)
-    assert grid_size * grid_size == length
+def get_2d_sincos_pos_embed(embed_dim, length, patch_size):
+    grid_size_w = patch_size
+    grid_size_h = length // patch_size
+    assert grid_size_h * grid_size_w == length
     def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
         assert embed_dim % 2 == 0
         # use half of dimensions to encode grid_h
@@ -143,11 +144,11 @@ def get_2d_sincos_pos_embed(embed_dim, length):
         emb = torch.cat([emb_h, emb_w], dim=1) # (H*W, D)
         return emb
 
-    grid_h = torch.arange(grid_size, dtype=torch.float32)
-    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid_h = torch.arange(grid_size_h, dtype=torch.float32)
+    grid_w = torch.arange(grid_size_w, dtype=torch.float32)
     grid = torch.meshgrid(grid_w, grid_h, indexing='xy')  # here w goes first
     grid = torch.stack(grid, dim=0)
-    grid = grid.reshape(2, 1, grid_size, grid_size)
+    grid = grid.reshape(2, 1, grid_size_h, grid_size_w)
     pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid).unsqueeze(0)
     return pos_embed
 
@@ -225,12 +226,13 @@ class MaskedMultimodalAutoencoder(nn.Module):
 
         return config
 
-    def __init__(self, text_vocab_size, image_output_dim = 768, config_updates=None):
+    def __init__(self, text_vocab_size, patch_size, image_output_dim = 768, config_updates=None):
         super(MaskedMultimodalAutoencoder, self).__init__()
         self.text_vocab_size = text_vocab_size
         self.config = self.get_default_config(config_updates)
         assert self.text_vocab_size > 0
 
+        self.patch_size = patch_size
         self.text_embedding = nn.Embedding(self.text_vocab_size, 
                                            self.config.emb_dim)
         self.text_embedding.weight.data.normal_(0.0, 1.0)
@@ -330,7 +332,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         if image is not None:
             image_x = (
                 self.image_embedding(image)
-                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1]).to(model_device)
+                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1], self.patch_size).to(model_device)
                 + self.get_type_embedding('encoder_image_type_embedding')
             )
             input_tensors.append(image_x)
@@ -368,7 +370,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             )
             image_x = (
                 self.image_embedding(image)
-                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1]).to(model_device)
+                + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1], self.patch_size).to(model_device)
                 + self.get_type_embedding('encoder_image_type_embedding')
             )
             image_x, image_mask, image_ids_restore = random_masking(
@@ -447,7 +449,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             )
             image_x = (
                 image_x.to(model_device)
-                + get_2d_sincos_pos_embed(self.config.dec_emb_dim, image_ids_restore.shape[0]).to(model_device)
+                + get_2d_sincos_pos_embed(self.config.dec_emb_dim, image_ids_restore.shape[0], self.patch_size).to(model_device)
                 + self.get_type_embedding('decoder_image_type_embedding')
             )
             input_tensors.append(image_x)
@@ -517,6 +519,7 @@ class UnifiedModel(nn.Module):
         super(UnifiedModel, self).__init__()
         self.M3AEmodel = MaskedMultimodalAutoencoder(
             text_vocab_size=dataset.vocab_size,
+            patch_size=args.patch_size,
             image_output_dim=args.patch_size * args.patch_size * 3,
             config_updates=ConfigDict(dict(model_type=args.model_type, image_mask_ratio=args.image_mask_ratio, text_mask_ratio=args.text_mask_ratio)),
         )
@@ -534,6 +537,7 @@ class UnifiedModel(nn.Module):
         self.reduced_dim = self.M3AEmodel.config.emb_dim
         self.dim = args.emb_dim
 
+        #self.node_embedding = nn.Embedding(self.num_nodes, self.reduced_dim)
         self.dim_reduce1 = nn.Linear(self.token_num, 1) # 320 -> 1
         self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
         self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
@@ -573,7 +577,7 @@ class UnifiedModel(nn.Module):
 
     def gcn_forward_encoder(self, x, edge_index, edge_type):
         #x = self.dim_reduce1(x.transpose(-2, -1))
-        x = x.transpose(-2, -1)
+        #x = x.transpose(-2, -1)
         x = x.view(x.shape[0], -1)
         x = self.conv1(x, edge_index, edge_type)
         x = self.activation(x)
@@ -584,13 +588,27 @@ class UnifiedModel(nn.Module):
         image = batch['image']
         text = batch['text']
         text_padding_mask = batch['text_padding_mask']
-        image_patches = extract_patches(image, self.patch_size)
+        if image is not None:
+            image_patches = extract_patches(image, self.patch_size)
+        else:
+            image_patches = None
+        # if image_patches is None and text is None:
+        #     cls_x = self.node_embedding(n_id)
+        # else:
         cls_x, x = self.M3AEmodel.forward_representation(
             image=image_patches,  text=text, text_padding_mask=text_padding_mask, deterministic=True
         )
 
         x_ecd = self.gcn_forward_encoder(cls_x, edge_index, edge_type) 
         
+        # batch_output = dict(
+        #     image_output=0,
+        #     text_output=0,
+        #     image_mask=0,
+        #     text_mask=0
+        # )
+        # return x_ecd, batch_output
+    
         if not self.is_evaluate:
             image_output, text_output, image_mask, text_mask = self.M3AEmodel(
                 image_patches, 
@@ -607,6 +625,3 @@ class UnifiedModel(nn.Module):
             return x_ecd, batch_output
         else:
             return x_ecd
-        
-# if __name__ == '__main__':
-#     print('hello')

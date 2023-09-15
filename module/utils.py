@@ -1,4 +1,5 @@
 import os
+from os import path as osp
 import torch
 import numpy as np
 import json
@@ -6,6 +7,8 @@ import einops
 import pickle
 from tqdm.auto import trange
 from collections import defaultdict
+from torch_geometric.loader import NeighborSampler
+from .data import MMKGDataset
 
 # @title Model size config
 def get_transformer_by_config(model_type, config):
@@ -149,3 +152,52 @@ def generate_batchdata(triples, images, texts, text_padding_masks):
     batch['text'] = texts
     batch['text_padding_mask'] = text_padding_masks
     return node_list, sub_edge_index, sub_edge_type, batch
+
+def generate_fix_samples(args, model, sample_size, batch_size, mode):
+    device = 'cuda:' + str(args.cuda) if int(args.cuda) >= 0 else 'cpu'
+    set_random_seed(args.seed)
+    # Instantiation of multimodal Graph Dataset
+    data_path = osp.join('./origin_data', args.dataset)
+    #Load test info
+    print(f'Start load {mode} dataset!')
+    
+    graph_test_dataset = MMKGDataset(
+        config=MMKGDataset.get_default_config(),
+        train_file=f'{mode}_tasks.json',
+        name=args.dataset,  
+        root=data_path, 
+        mode=mode,
+        mm_info=None
+    )
+    print(f'Finish load {mode} dataset!')
+
+    test_graph = graph_test_dataset.get_struc_dataset()
+    
+    test_dataloader = NeighborSampler(
+        test_graph.edge_index,
+        sizes=[sample_size],
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=args.dataloader_n_workers
+    )
+
+    model.eval()
+    saved_info = dict()
+    step_counter = trange(0, len(test_dataloader), ncols=0)
+    for step, data in zip(step_counter, test_dataloader):
+        batch_size, n_id, adjs = data
+        edge_index_expand, edge_type_expand = model.generate_eval_list(
+            local_global_id={k: v.item() for k, v in zip(range(len(n_id)), n_id)},
+            edge_index=adjs.edge_index.to(device),
+            edge_type=test_graph.edge_type[adjs.e_id], 
+            )
+        saved_info[step] = {
+            'step':step,
+            'batch_size':len(adjs.e_id),
+            'edge_index_expand':edge_index_expand.numpy().tolist(),
+            'edge_type_expand':edge_type_expand.numpy().tolist(),
+            'n_id':n_id.numpy().tolist()
+        }
+    with open(f'./origin_data/{args.dataset}/{mode}/sub_{mode}_samples.json', 'w') as fout:
+        json.dump(saved_info, fout)
+    print('generate success!')

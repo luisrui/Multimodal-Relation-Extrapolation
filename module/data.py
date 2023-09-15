@@ -35,7 +35,7 @@ class ImageTextDataset(torch.utils.data.Dataset):
 
         config.image_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
         config.tokenizer_max_length = 64
 
         config.transform_type = "pretrain"
@@ -417,7 +417,7 @@ class TextDataset(torch.utils.data.Dataset):
         config.random_start = True
 
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
         config.tokenizer_max_length = 256
 
         if updates is not None:
@@ -534,8 +534,9 @@ class MMKGDataset(torch_geometric.data.Dataset):
         config.random_start = True
 
         config.image_only = False
+        config.text_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/bert-base-uncased-tokenizer"
         config.tokenizer_max_length = 64
         config.unpaired_tokenizer_max_length = 320
         
@@ -559,6 +560,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
     
     def __init__(self, config, train_file, name, root, mode, mm_info, transform=None, pre_transform=None):
         self.config = self.get_default_config(config)
+        assert self.config.image_only != self.config.text_only or (self.config.image_only == self.config.text_only and self.config.text_only == False)
         self.name = name
         self.root = root
         self.train_file = train_file
@@ -607,7 +609,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
 
     @property
     def raw_file_names(self):
-        return [self.train_file, 'entity2ids_clear.json', 'relation2ids_clear.json']
+        return [self.train_file, 'entity2ids.json', 'relation2ids.json']
     
     @property
     def processed_file_names(self):
@@ -698,8 +700,23 @@ class MMKGDataset(torch_geometric.data.Dataset):
             pickle.dump(self.mm_info, fout)
         print('Finish multimodal infomation preprocessing!')
 
-    def _image_prepro(self, image_ori):
-        with BytesIO(image_ori) as fin:
+    def _image_prepro(self, images_ori):
+        # images = []
+        # for image_ori in images_ori:
+        #     with BytesIO(image_ori) as fin:
+        #         image = skimage.io.imread(fin)
+        #     if len(image.shape) == 2:
+        #         image = gray2rgb(image)
+        #     elif image.shape[-1] == 4:
+        #         image = rgba2rgb(image)
+
+        #     image = (
+        #         self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0)
+        #     )
+        #     # image = image.astype(np.float32)
+        #     images.append(image)
+        # return torch.cat(images, dim=0)
+        with BytesIO(images_ori) as fin:
             image = skimage.io.imread(fin)
         if len(image.shape) == 2:
             image = gray2rgb(image)
@@ -709,8 +726,6 @@ class MMKGDataset(torch_geometric.data.Dataset):
         image = (
             self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0)
         )
-        # image = image.astype(np.float32)
-
         return image
     
     def _text_prepro(self, text, tokenizer_max_length):
@@ -737,18 +752,22 @@ class MMKGDataset(torch_geometric.data.Dataset):
         batch_unprocessed_data = [self.mm_info[idx] for idx in node_list]
         mm_batch = defaultdict(list)
         for node_info in batch_unprocessed_data:
-            #assert len(node_info) == 2 or len(node_info) == 1
-            assert node_info.__len__() == 2
-            image_ori, text_ori = node_info
-            image = self._image_prepro(image_ori)
-            # else:
-            #     text_ori = node_info[0]
-            #     image = torch.empty(self.config.image_size, self.config.image_size, 3)
-            #     torch.nn.init.xavier_uniform_(image)
-            #     image *= 10
-            mm_batch['image'].append(image)
-            if self.config.image_only:
-                continue
+            if node_info.__len__() == 2:
+                images_ori, text_ori = node_info
+                if not self.config.text_only:
+                    image = self._image_prepro(images_ori)
+                    mm_batch['image'].append(image)
+                    if self.config.image_only:
+                        continue
+            else:
+                text_ori = node_info[0]
+                if not self.config.text_only:
+                    image = torch.empty(self.config.image_size, self.config.image_size, 3)
+                    torch.nn.init.xavier_uniform_(image)
+                    image *= 10
+                    mm_batch['image'].append(image)
+                    if self.config.image_only:
+                        continue
 
             try:
                 text, text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
@@ -757,7 +776,10 @@ class MMKGDataset(torch_geometric.data.Dataset):
             except:
                 mm_batch['text'].append(text_ori)
 
-        mm_batch['image'] = torch.stack(mm_batch['image'], dim = 0).to(torch.float32)
+        if len(mm_batch['image']) != 0:
+            mm_batch['image'] = torch.stack(mm_batch['image'], dim = 0).to(torch.float32)
+        else:
+            mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.int32)
         mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32)
         mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32)
         # mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32)
@@ -776,7 +798,7 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
 
         config.image_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
         config.tokenizer_max_length = 64
         config.unpaired_tokenizer_max_length = 320
         

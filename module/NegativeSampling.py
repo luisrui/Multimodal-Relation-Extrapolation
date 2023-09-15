@@ -232,6 +232,8 @@ class NegativeSampling(BaseModule):
 	#Computing the loss of the whole model
 	def forward(self, local_global_id, edge_index, edge_type, batch, deterministic=False):
 		device = self.get_model_device()
+		#################test
+		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
 		x_gcn, batch_output = self.model(
 			edge_index, edge_type, batch, deterministic)
 		mapped_node_list = torch.arange(torch.max(edge_index))
@@ -253,20 +255,26 @@ class NegativeSampling(BaseModule):
 		text_output = batch_output['text_output']
 		text_mask= batch_output['text_mask']
 
-		image_patches = extract_patches(image, self.args.patch_size)
-		# Forward Propogation
-		#Missing discretized image optimization
-		image_loss = patch_mse_loss(
-			image_output, image_patches,
-			None if self.args.image_all_token_loss else image_mask
-		)
-		text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
-			text_output, text,  
-			mask_intersection(
-				all_mask(text) if self.args.text_all_token_loss else text_mask,
-				mask_not(text_padding_mask).to(device)
+		if image is not None:
+			image_patches = extract_patches(image, self.args.patch_size)
+			#Missing discretized image optimization
+			image_loss = patch_mse_loss(
+				image_output, image_patches,
+				None if self.args.image_all_token_loss else image_mask
 			)
-		)
+		else:
+			image_loss = 0.0
+
+		if text is not None:
+			text_loss, text_accuracy = cross_entropy_loss_and_accuracy(
+				text_output, text,  
+				mask_intersection(
+					all_mask(text) if self.args.text_all_token_loss else text_mask,
+					mask_not(text_padding_mask).to(device)
+				)
+			)
+		else:
+			text_loss = 0.0
 
 		loss_image_text = (
 			self.args.image_loss_weight * image_loss
@@ -286,8 +294,11 @@ class NegativeSampling(BaseModule):
 		device = self.get_model_device()
 		edge_index = edge_index_expand[:, :batch_size].to(device)
 		edge_type = edge_type_expand[:batch_size].to(device)
-		x_gcn = self.model(
+		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
+		x_gcn, batch_output = self.model(
 			edge_index, edge_type, batch, deterministic)
+		# x_gcn = self.model(
+		# 	edge_index, edge_type, batch, deterministic)
 		edge_index_expand = edge_index_expand.to(device)
 		edge_type_expand = edge_type_expand.to(device)
 		score = self.scoring_fn(local_global_id, x_gcn, edge_index_expand, edge_type_expand)
