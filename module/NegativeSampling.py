@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import os
@@ -6,11 +5,16 @@ import json
 import numpy as np
 from torch.nn import functional as F
 import random
+from collections import defaultdict
+#from muse import MaskGitVQGAN
 
+from sklearn.metrics.pairwise import cosine_similarity
 from module.model import (
 	extract_patches, patch_mse_loss, cross_entropy_loss_and_accuracy, 
 	mask_intersection, all_mask, mask_not
 )
+from module.vqgan import get_image_tokenizer
+from module.submodule import BaseModule
 
 class BaseModule(nn.Module):
 
@@ -21,8 +25,8 @@ class BaseModule(nn.Module):
 		self.pi_const = nn.Parameter(torch.Tensor([3.14159265358979323846]))
 		self.pi_const.requires_grad = False
 
-	def load_checkpoint(self, path):
-		self.load_state_dict(torch.load(os.path.join(path)))
+	def load_checkpoint(self, path, device):
+		self.load_state_dict(torch.load(os.path.join(path), map_location=device))
 		self.eval()
 
 	def save_checkpoint(self, path):
@@ -70,7 +74,6 @@ class NegativeSampling(BaseModule):
 			model = None,
 			loss_fn = None, 
 			regul_rate = 0.5, 
-			neg_rel = 0, 
 			neg_ent = 1, 
 			sampling_mode = "normal",
 			bern_flag = False,
@@ -86,7 +89,6 @@ class NegativeSampling(BaseModule):
 
 		#sample configs
 		self.rel_total = self.model.num_relations if model is not None else 237
-		self.neg_rel = neg_rel
 		self.neg_ent = neg_ent
 		self.bern_flag = bern_flag
 		self.filter_flag = filter_flag
@@ -98,10 +100,14 @@ class NegativeSampling(BaseModule):
 		else:
 			self.cross_sampling_flag = 0
 		
-		self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
+		#self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
 		#self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
-		h, r, t = whole_triples
-		self.__count_htr(h, r, t)
+		self.feature_extractor = nn.Linear(self.model.dim * 2, self.model.dim)
+		if args.discretized_image:
+			self.vq_model = MaskGitVQGAN.from_pretrained("/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/maskgit")
+		if whole_triples is not None:
+			h, r, t = whole_triples
+			self.__count_htr(h, r, t)
 
 	def __count_htr(self, head, rel, tail):
 		self.h_of_tr = {}
@@ -144,17 +150,45 @@ class NegativeSampling(BaseModule):
 		# 	self.lef_mean[r] = self.freqRel[r] / len(self.h_of_r[r])
 		# 	self.rig_mean[r] = self.freqRel[r] / len(self.t_of_r[r])
 	
-	def scoring_fn(self, local_global_id, x, edge_index, edge_type):
+	def scoring_fn(self, local_global_id, x, relations, edge_index, edge_type):
 		#batch_head = self.ent_embedding(self._global_mapping(local_global_id, edge_index[0]).to(self.get_model_device()))
 		batch_head = x[edge_index[0].long()]
 		#batch_tail = self.ent_embedding(self._global_mapping(local_global_id, edge_index[1]).to(self.get_model_device()))
 		batch_tail = x[edge_index[1].long()]
-		batch_rel = self.rel_embedding(edge_type)
-		score = self._calc(batch_head, batch_tail, batch_rel)
+		# batch_rel = self.rel_embedding(edge_type)
+		score = self._calc(h=batch_head, t=batch_tail, r=relations)
 		return score
 	
 	def get_model_device(self):
 		return next(self.parameters()).device
+	
+	def neg_sample_fn(self, local_global_id, node_list, edge_index, edge_type):
+		assert edge_index.shape[0] == 2
+		batch_h, batch_t, batch_r = edge_index[0], edge_index[1], edge_type
+		#len_triples = batch_h.__len__()
+		batch_data = {}
+		if self.sampling_mode == "normal":
+			batch_data['mode'] = "normal"
+			batch_h_sample = np.repeat(batch_h.view(-1, 1).cpu().numpy(), 1 + self.neg_ent, axis = -1)
+			batch_t_sample = np.repeat(batch_t.view(-1, 1).cpu().numpy(), 1 + self.neg_ent, axis = -1)
+			batch_r_sample = np.repeat(batch_r.view(-1, 1).cpu().numpy(), 1 + self.neg_ent, axis = -1)
+			for idx, (h, t, r) in enumerate(zip(batch_h, batch_t, batch_r)):
+				last = 1
+				if self.neg_ent > 0:
+					neg_head, neg_tail = self.__normal_batch(local_global_id, node_list, h, t, r, self.neg_ent)
+					if len(neg_head) > 0:
+						batch_h_sample[idx][last:last + len(neg_head)] = neg_head
+						last += len(neg_head)
+					if len(neg_tail) > 0:
+						batch_t_sample[idx][last:last + len(neg_tail)] = neg_tail
+						last += len(neg_tail)
+			batch_h = batch_h_sample.transpose()
+			batch_t = batch_t_sample.transpose()
+			batch_r = batch_r_sample.transpose()
+
+		expand_edge_index = torch.tensor(np.array([batch_h.squeeze().flatten(), batch_t.squeeze().flatten()]), dtype=torch.int32)
+		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int32)
+		return expand_edge_index, expand_edge_type
 	
 	def _calc(self, h, t, r, mode='normal', score_model='distmult'):
 		if score_model == 'transe':
@@ -187,38 +221,6 @@ class NegativeSampling(BaseModule):
 	def _global_mapping(self, local_global_id:dict, tranfer_list:torch.tensor):
 		return torch.tensor([local_global_id[i.item()] for i in tranfer_list])
 	
-	def neg_sample_fn(self, local_global_id, node_list, edge_index, edge_type):
-		assert edge_index.shape[0] == 2
-		batch_h, batch_t, batch_r = edge_index[0], edge_index[1], edge_type
-		#len_triples = batch_h.__len__()
-		batch_data = {}
-		if self.sampling_mode == "normal":
-			batch_data['mode'] = "normal"
-			batch_h_sample = np.repeat(batch_h.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
-			batch_t_sample = np.repeat(batch_t.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
-			batch_r_sample = np.repeat(batch_r.view(-1, 1).cpu().numpy(), 1 + self.neg_ent + self.neg_rel, axis = -1)
-			for idx, (h, t, r) in enumerate(zip(batch_h, batch_t, batch_r)):
-				last = 1
-				if self.neg_ent > 0:
-					neg_head, neg_tail = self.__normal_batch(local_global_id, node_list, h, t, r, self.neg_ent)
-					if len(neg_head) > 0:
-						batch_h_sample[idx][last:last + len(neg_head)] = neg_head
-						last += len(neg_head)
-					if len(neg_tail) > 0:
-						batch_t_sample[idx][last:last + len(neg_tail)] = neg_tail
-						last += len(neg_tail)
-				if self.neg_rel > 0:
-					neg_rel = self.__rel_batch(local_global_id, h, r, t, self.neg_rel)
-					batch_r_sample[idx][last:last + len(neg_rel)] = neg_rel
-					last += len(neg_rel)
-			batch_h = batch_h_sample.transpose()
-			batch_t = batch_t_sample.transpose()
-			batch_r = batch_r_sample.transpose()
-
-		expand_edge_index = torch.tensor(np.array([batch_h.squeeze().flatten(), batch_t.squeeze().flatten()]), dtype=torch.int32)
-		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int32)
-		return expand_edge_index, expand_edge_type
-	
 	def _get_positive_score(self, score, num_pos_samples):
 		positive_score = score[:num_pos_samples]
 		positive_score = positive_score.view(-1, num_pos_samples).permute(1, 0)
@@ -229,23 +231,52 @@ class NegativeSampling(BaseModule):
 		negative_score = negative_score.view(-1, num_pos_samples).permute(1, 0)
 		return negative_score
 	
+	def centroid_loss(self, x, edge_index, edge_type, rel_embs):
+		# rel_list = torch.unique(edge_type)
+		# centroids = dict()
+		# for h, r, t in zip(edge_index[0], edge_type, edge_index[1]):
+		# 	if r not in centroids.keys(): centroids[r] = list()
+		# 	pair_emb = torch.cat((x[h], x[t]), dim = 0)
+		# 	pair_emb = self.feature_extractor(pair_emb)
+		# 	centroids[r].append(pair_emb.cpu().numpy())
+		# for rel, points in centroids:
+		# 	points = torch.tensor(np.array(points))
+		# 	centroids[rel] = torch.sum(points, dim = 0)
+		pair_embs = []
+		for h, r, t in zip(edge_index[0], edge_type, edge_index[1]):
+			pair_emb = torch.cat((x[h], x[t]), dim = 0)
+			pair_embs.append(pair_emb)
+		pair_embs = torch.stack(pair_embs, dim = 0).to(self.get_model_device())
+		pair_embs = self.feature_extractor(pair_embs)
+		cen_score = F.cosine_similarity(pair_embs, rel_embs, dim=1)
+		return cen_score
+	
 	#Computing the loss of the whole model
 	def forward(self, local_global_id, edge_index, edge_type, batch, deterministic=False):
 		device = self.get_model_device()
 		#################test
 		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
-		x_gcn, batch_output = self.model(
+		x_gcn, rel_emb, batch_output = self.model(
 			edge_index, edge_type, batch, deterministic)
 		mapped_node_list = torch.arange(torch.max(edge_index))
 		edge_index_expand, edge_type_expand = self.neg_sample_fn(local_global_id, mapped_node_list, edge_index, edge_type)
 		edge_index_expand = edge_index_expand.to(device)
 		edge_type_expand = edge_type_expand.to(device)
-		score = self.scoring_fn(local_global_id, x_gcn, edge_index_expand, edge_type_expand)
+		rel_emb_expand = rel_emb.repeat(1 + self.neg_ent, 1).to(device)
+
+		cen_score = self.centroid_loss(x_gcn, edge_index_expand, edge_type_expand, rel_emb_expand)
+		c_pos_score = self._get_positive_score(cen_score, len(edge_type))
+		c_neg_score = self._get_negative_score(cen_score, len(edge_type))
+		loss_rel_center = self.loss_fn(c_pos_score, c_neg_score)
+
+		score = self.scoring_fn(local_global_id, x_gcn, rel_emb_expand, edge_index_expand, edge_type_expand)
 		pos_score = self._get_positive_score(score, len(edge_type))
 		neg_score = self._get_negative_score(score, len(edge_type))
 		loss_res_gcn = self.loss_fn(pos_score, neg_score)
+
+		struct_loss = loss_rel_center + loss_res_gcn
 		if self.regul_rate != 0:
-			loss_res_gcn += self.regul_rate * self.regularization(x_gcn, edge_index_expand, edge_type_expand)
+			struct_loss += self.regul_rate * self.regularization(x_gcn, rel_emb_expand, edge_index_expand, edge_type_expand)
 
 		image = batch['image']
 		text = batch['text']
@@ -254,14 +285,25 @@ class NegativeSampling(BaseModule):
 		image_mask = batch_output['image_mask']
 		text_output = batch_output['text_output']
 		text_mask= batch_output['text_mask']
+		contrastive_loss = batch_output['contrastive_loss']
 
 		if image is not None:
-			image_patches = extract_patches(image, self.args.patch_size)
-			#Missing discretized image optimization
-			image_loss = patch_mse_loss(
-				image_output, image_patches,
-				None if self.args.image_all_token_loss else image_mask
-			)
+			if self.args.discretized_image:
+				print(image.shape)
+				encoded_image = self.vq_model.encode(image)
+				#encoded_image = encode_image(tokenizer_params, image)
+				print(encoded_image.shape)
+				image_loss, image_accuracy = cross_entropy_loss_and_accuracy(
+                    image_output, encoded_image,
+                    None if self.args.image_all_token_loss else image_mask
+                )
+			else:
+				image_patches = extract_patches(image, self.args.patch_size)
+				#Missing discretized image optimization
+				image_loss = patch_mse_loss(
+					image_output, image_patches,
+					None if self.args.image_all_token_loss else image_mask
+				)
 		else:
 			image_loss = 0.0
 
@@ -280,13 +322,23 @@ class NegativeSampling(BaseModule):
 			self.args.image_loss_weight * image_loss
 			+ self.args.text_loss_weight * text_loss
 		)
-		
-		loss = loss_image_text + self.args.gcn_loss_weight * loss_res_gcn
+
+		loss = loss_image_text + self.args.gcn_loss_weight * loss_res_gcn + self.args.contrastive_loss_weight * contrastive_loss
+		# info = dict(
+		# 	struc_loss=loss_res_gcn,
+		# 	loss_image_text=loss_image_text,
+		# 	image_loss=image_loss,
+		# 	text_loss=text_loss,
+		# 	contrastive_loss=contrastive_loss
+		# )
 		info = dict(
-			struc_loss=loss_res_gcn,
+			struct_loss = struct_loss,
+			gcn_loss=loss_res_gcn,
+			center_loss=loss_rel_center,
 			loss_image_text=loss_image_text,
 			image_loss=image_loss,
-			text_loss=text_loss
+			text_loss=text_loss,
+			contrastive_loss=contrastive_loss
 		)
 		return loss, info
 	
@@ -295,10 +347,12 @@ class NegativeSampling(BaseModule):
 		edge_index = edge_index_expand[:, :batch_size].to(device)
 		edge_type = edge_type_expand[:batch_size].to(device)
 		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
-		x_gcn, batch_output = self.model(
+		# try:
+		# 	x_gcn, _ = self.model(
+		# 		edge_index, edge_type, batch, deterministic)
+		# except:
+		x_gcn = self.model(
 			edge_index, edge_type, batch, deterministic)
-		# x_gcn = self.model(
-		# 	edge_index, edge_type, batch, deterministic)
 		edge_index_expand = edge_index_expand.to(device)
 		edge_type_expand = edge_type_expand.to(device)
 		score = self.scoring_fn(local_global_id, x_gcn, edge_index_expand, edge_type_expand)
@@ -306,13 +360,13 @@ class NegativeSampling(BaseModule):
 		neg_score = self._get_negative_score(score, batch_size)
 		return pos_score, neg_score
 
-	def regularization(self, x, edge_index, edge_type):
+	def regularization(self, x, relations, edge_index, edge_type):
 		batch_head = x[edge_index[0].long()]
 		batch_tail = x[edge_index[1].long()]
-		batch_rel = self.rel_embedding(edge_type)
+		#batch_rel = self.rel_embedding(edge_type)
 		regul = (torch.mean(batch_head ** 2) + 
                  torch.mean(batch_tail ** 2) + 
-                 torch.mean(batch_rel ** 2)) / 3
+                 torch.mean(relations ** 2)) / 3
 		return regul
 
 	def generate_eval_list(self, local_global_id, edge_index, edge_type):
@@ -350,15 +404,6 @@ class NegativeSampling(BaseModule):
 
 		return neg_list_h[:neg_size_h], neg_list_t[:neg_size_t]
 	  
-	def __rel_batch(self, local_global_id, h, t, r, neg_size):
-		neg_list = []
-		neg_cur_size = 0
-		while neg_cur_size < neg_size:
-			neg_tmp = self.__corrupt_rel(local_global_id, h, r, t, num_max = (neg_size - neg_cur_size) * 2)
-			neg_list.append(neg_tmp)
-			neg_cur_size += len(neg_tmp)
-		return np.concatenate(neg_list)[:neg_size]
-	
 	def __corrupt_head(self, local_global_id, node_list, t, r, num_max = 1):
 		try:
 			tmp = torch.tensor(random.sample(node_list.cpu().numpy().tolist(), k=num_max))
@@ -385,13 +430,6 @@ class NegativeSampling(BaseModule):
 		neg = tmp[mask]
 		return neg
 
-	def __corrupt_rel(self, local_global_id, h, r, t, num_max = 1):
-		tmp = random.sample(r.numpy().tolist(), k=num_max)
-		if not self.filter_flag:
-			return tmp
-		mask = np.in1d(tmp, self.r_of_ht[(local_global_id[h], local_global_id[t])], assume_unique=True, invert=True)
-		neg = tmp[mask]
-		return neg
 	
 if __name__ == '__main__':
 	from torch_geometric.utils import subgraph

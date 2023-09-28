@@ -22,490 +22,11 @@ from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torchvision import transforms
 from tqdm import trange
 
-class ImageTextDataset(torch.utils.data.Dataset):
-    @staticmethod
-    def get_default_config(updates=None):
-        config = ConfigDict()
-        config.dataset = ''
-        config.path = "./origin_data/FB15K-237/FB15K-237_paired.hdf5"
-
-        config.start_index = 0
-        config.max_length = int(1e9)
-        config.random_start = False
-
-        config.image_only = False
-        config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
-        config.tokenizer_max_length = 64
-
-        config.transform_type = "pretrain"
-        config.image_size = 256
-
-        config.image_normalization = 'imagenet'
-        config.custom_image_mean = [0.485, 0.456, 0.406]
-        config.custom_image_std = [0.229, 0.224, 0.225]
-
-        config.random_drop_text = 0.0
-        config.deterministic_drop_text = 0.0
-
-        if updates is not None:
-            config.update(ConfigDict(updates).copy_and_resolve_references())
-        return config
-
-    def __init__(self, config, start_offset_ratio=None):
-        self.config = self.get_default_config(config)
-        assert self.config.path != ""
-
-        if self.config.image_normalization == 'imagenet':
-            self.image_mean = (0.485, 0.456, 0.406)
-            self.image_std = (0.229, 0.224, 0.225)
-        elif self.config.image_normalization == 'cc12m':
-            self.image_mean = (0.5762, 0.5503, 0.5213)
-            self.image_std = (0.3207, 0.3169, 0.3307)
-        elif self.config.image_normalization == 'none':
-            self.image_mean = (0.0, 0.0, 0.0)
-            self.image_std = (1.0, 1.0, 1.0)
-        elif self.config.image_normalization == 'custom':
-            self.image_mean = tuple(float(x) for x in self.config.custom_image_mean.split('-'))
-            self.image_std = tuple(float(x) for x in self.config.custom_image_std.split('-'))
-            assert len(self.image_mean) == len(self.image_std) == 3
-        else:
-            raise ValueError('Unsupported image normalization mode!')
-
-        if self.config.path.startswith("gs://"):
-            # Loading from GCS
-            self.h5_file = h5py.File(
-                gcsfs.GCSFileSystem().open(self.config.path, cache_type="block"), "r"
-            )
-        else:
-            self.h5_file = h5py.File(self.config.path, "r")
-
-        if self.config.transform_type == "pretrain":
-            # Use Kaiming's simple pretrain processing
-            self.transform = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(
-                        self.config.image_size,
-                        scale=(0.2, 1.0),
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=self.image_mean, std=self.image_std),
-                ]
-            )
-        elif self.config.transform_type == "finetune":
-            # Use Kaiming's finetune processing
-            self.transform = create_transform(
-                input_size=self.config.image_size,
-                is_training=True,
-                color_jitter=True,
-                auto_augment=None,
-                interpolation="bicubic",
-                re_prob=0,
-                re_mode=0,
-                re_count="const",
-                mean=self.image_mean,
-                std=self.image_std,
-            )
-        elif self.config.transform_type == "test":
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize(
-                        self.config.image_size,
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.CenterCrop(self.config.image_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=self.image_mean, std=self.image_std),
-                ]
-            )
-        elif self.config.transform_type == 'resize_only':
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize(
-                        self.config.image_size,
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.CenterCrop(self.config.image_size),
-                    transforms.ToTensor(),
-                ]
-            )
-        else:
-            raise ValueError("Unsupported transform_type!")
-
-        if self.config.tokenize:
-            self.tokenizer = transformers.BertTokenizer.from_pretrained(
-                self.config.tokenizer
-            )
-
-        if self.config.random_start:
-            # Bypass numpy random seed
-            self.random_start_offset = np.random.default_rng().choice(len(self))
-        elif start_offset_ratio is not None:
-            self.random_start_offset = int(len(self) * start_offset_ratio) % len(self)
-        else:
-            self.random_start_offset = 0
-
-    def __getstate__(self):
-        return self.config, self.random_start_offset
-
-    def __setstate__(self, state):
-        config, random_start_offset = state
-        self.__init__(config)
-        self.random_start_offset = random_start_offset
-
-    def __len__(self):
-        return min(
-            self.h5_file["jpg"].shape[0] - self.config.start_index,
-            self.config.max_length,
-        )
-
-    def process_index(self, index):
-        index = (index + self.random_start_offset) % len(self)
-        return index + self.config.start_index
-
-    def drop_text(self, raw_index):
-        deterministic_drop = float(raw_index % 100) / 100. < self.config.deterministic_drop_text
-        random_drop = np.random.rand() < self.config.random_drop_text
-        return deterministic_drop or random_drop
-
-    def __getitem__(self, raw_index):
-        index = self.process_index(raw_index)
-        with BytesIO(self.h5_file["jpg"][index]) as fin:
-            image = skimage.io.imread(fin)
-
-        if len(image.shape) == 2:
-            image = gray2rgb(image)
-        elif image.shape[-1] == 4:
-            image = rgba2rgb(image)
-
-        image = (
-            self.transform(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
-        )
-        image = image.astype(np.float32)
-        if self.config.image_only:
-            return image
-
-        with BytesIO(self.h5_file["caption"][index]) as fin:
-            caption = fin.read().decode("utf-8")
-
-        if not self.config.tokenize:
-            return image, caption
-
-        if len(caption) == 0 or self.drop_text(raw_index):
-            tokenized_caption = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
-            padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
-            return image, tokenized_caption, padding_mask
-
-        encoded_caption = self.tokenizer(
-            caption,
-            padding="max_length",
-            truncation=True,
-            max_length=self.config.tokenizer_max_length,
-            return_tensors="np",
-            add_special_tokens=False,
-        )
-
-        if encoded_caption["input_ids"][0].size == 0:  # Empty token
-            tokenized_caption = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
-            padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
-        else:
-            tokenized_caption = encoded_caption["input_ids"][0]
-            padding_mask = 1.0 - encoded_caption["attention_mask"][0].astype(np.float32)
-
-        return image, tokenized_caption, padding_mask
-
-    @property
-    def vocab_size(self):
-        return self.tokenizer.vocab_size
-
-    @property
-    def text_length(self):
-        return self.config.tokenizer_max_length
-
-
-class ImageNetDataset(torch.utils.data.Dataset):
-    @staticmethod
-    def get_default_config(updates=None):
-        config = ConfigDict()
-        config.path = ""
-        config.partition = "train"
-        config.image_only = False
-
-        config.start_index = 0
-        config.max_length = int(1e9)
-        config.random_start = False
-
-        config.image_normalization = 'imagenet'
-        config.transform_type = "pretrain"
-        config.image_size = 256
-
-        config.autoaug = "rand-m9-mstd0.5-inc1"
-
-        if updates is not None:
-            config.update(ConfigDict(updates).copy_and_resolve_references())
-        return config
-
-    def __init__(self, config, start_offset_ratio=None):
-        self.config = self.get_default_config(config)
-        assert self.config.path != ""
-
-        if self.config.path.startswith("gs://"):
-            # Loading from GCS
-            self.h5_file = h5py.File(
-                gcsfs.GCSFileSystem().open(self.config.path, cache_type="block"), "r"
-            )
-        else:
-            self.h5_file = h5py.File(self.config.path, "r")
-
-        if self.config.image_normalization == 'imagenet':
-            self.image_mean = (0.485, 0.456, 0.406)
-            self.image_std = (0.229, 0.224, 0.225)
-        elif self.config.image_normalization == 'cc12m':
-            self.image_mean = (0.5762, 0.5503, 0.5213)
-            self.image_std = (0.3207, 0.3169, 0.3307)
-        elif self.config.image_normalization == 'none':
-            self.image_mean = (0.0, 0.0, 0.0)
-            self.image_std = (1.0, 1.0, 1.0)
-        elif self.config.image_normalization == 'custom':
-            self.image_mean = tuple(float(x) for x in self.config.custom_image_mean.split('-'))
-            self.image_std = tuple(float(x) for x in self.config.custom_image_std.split('-'))
-            assert len(self.image_mean) == len(self.image_std) == 3
-        else:
-            raise ValueError('Unsupported image normalization mode!')
-
-        if self.config.transform_type == "pretrain":
-            # Use Kaiming's simple pretrain processing
-            self.transform = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(
-                        self.config.image_size,
-                        scale=(0.2, 1.0),
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=self.image_mean, std=self.image_std
-                    ),
-                ]
-            )
-        elif self.config.transform_type == "finetune":
-            # Use Kaiming's finetune processing
-            self.transform = create_transform(
-                input_size=self.config.image_size,
-                is_training=True,
-                color_jitter=True,
-                auto_augment=self.config.autoaug,
-                interpolation="bicubic",
-                re_prob=0,
-                re_mode=0,
-                re_count="const",
-                mean=self.image_mean,
-                std=self.image_std,
-            )
-        elif self.config.transform_type == "plain_finetune":
-            # Use supervised training processing of ViT from "Better plain ViT baselines for ImageNet-1k" https://arxiv.org/abs/2205.01580
-            self.transform = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(
-                        self.config.image_size,
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=self.image_mean, std=self.image_std
-                    ),
-                ]
-            )
-        elif self.config.transform_type == "linear_prob":
-            self.transform = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(
-                        self.config.image_size,
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=self.image_mean, std=self.image_std
-                    ),
-                ]
-            )
-        elif self.config.transform_type == "test":
-            self.transform = transforms.Compose(
-                [
-                    transforms.Resize(
-                        self.config.image_size,
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                    ),
-                    transforms.CenterCrop(self.config.image_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize(
-                        mean=self.image_mean, std=self.image_std
-                    ),
-                ]
-            )
-        else:
-            raise ValueError("Unsupported transform_type!")
-
-        if self.config.random_start:
-            # Bypass numpy random seed
-            self.random_start_offset = np.random.default_rng().choice(len(self))
-        elif start_offset_ratio is not None:
-            self.random_start_offset = int(len(self) * start_offset_ratio) % len(self)
-        else:
-            self.random_start_offset = 0
-
-    def __getstate__(self):
-        return self.config, self.random_start_offset
-
-    def __setstate__(self, state):
-        config, random_start_offset = state
-        self.__init__(config)
-        self.random_start_offset = random_start_offset
-
-    def __len__(self):
-        return min(
-            self.h5_file["{}_jpg".format(self.config.partition)].shape[0]
-            - self.config.start_index,
-            self.config.max_length,
-        )
-
-    def process_index(self, index):
-        index = (index + self.random_start_offset) % len(self)
-        return index + self.config.start_index
-
-    def __getitem__(self, index):
-        index = self.process_index(index)
-        with BytesIO(
-            self.h5_file["{}_jpg".format(self.config.partition)][index]
-        ) as fin:
-            image = skimage.io.imread(fin)
-
-        if len(image.shape) == 2:
-            image = gray2rgb(image)
-        elif image.shape[-1] == 4:
-            image = rgba2rgb(image)
-
-        image = (
-            self.transform(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
-        )
-        image = image.astype(np.float32)
-
-        if self.config.image_only:
-            return image
-
-        label = self.h5_file["{}_labels".format(self.config.partition)][index]
-
-        return image, label
-
-    def num_classes(self):
-        return 1000
-
-
-class TextDataset(torch.utils.data.Dataset):
-    @staticmethod
-    def get_default_config(updates=None):
-        config = ConfigDict()
-        config.path = "./origin_data/FB15K-237/FB15K-237_unpaired_text.hdf5"
-
-        config.start_index = 0
-        config.max_length = int(1e9)
-        config.random_start = True
-
-        config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
-        config.tokenizer_max_length = 256
-
-        if updates is not None:
-            config.update(ConfigDict(updates).copy_and_resolve_references())
-        return config
-
-    def __init__(self, config, start_offset_ratio=None):
-        self.config = self.get_default_config(config)
-        assert self.config.path != ""
-
-        if self.config.path.startswith("gs://"):
-            # Loading from GCS
-            self.h5_file = h5py.File(
-                gcsfs.GCSFileSystem().open(self.config.path, cache_type="block"), "r"
-            )
-        else:
-            self.h5_file = h5py.File(self.config.path, "r")
-
-        if self.config.tokenize:
-            self.tokenizer = transformers.BertTokenizer.from_pretrained(
-                self.config.tokenizer
-            )
-
-        if self.config.random_start:
-            # Bypass numpy random seed
-            self.random_start_offset = np.random.default_rng().choice(len(self))
-        elif start_offset_ratio is not None:
-            self.random_start_offset = int(len(self) * start_offset_ratio) % len(self)
-        else:
-            self.random_start_offset = 0
-
-    def __getstate__(self):
-        return self.config, self.random_start_offset
-
-    def __setstate__(self, state):
-        config, random_start_offset = state
-        self.__init__(config)
-        self.random_start_offset = random_start_offset
-
-    def __len__(self):
-        return min(
-            self.h5_file["text"].shape[0] - self.config.start_index,
-            self.config.max_length,
-        )
-
-    def process_index(self, index):
-        index = (index + self.random_start_offset) % len(self)
-        return index + self.config.start_index
-
-    def __getitem__(self, raw_index):
-        index = self.process_index(raw_index)
-
-        with BytesIO(self.h5_file["text"][index]) as fin:
-            text = fin.read().decode("utf-8")
-
-        if not self.config.tokenize:
-            return text
-
-        if len(text) == 0:
-            tokenized = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
-            padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
-            return tokenized, padding_mask
-
-        encoded_text = self.tokenizer(
-            text,
-            padding="max_length",
-            truncation=True,
-            max_length=self.config.tokenizer_max_length,
-            return_tensors="np",
-            add_special_tokens=False,
-        )
-
-        if encoded_text["input_ids"][0].size == 0:  # Empty token
-            tokenized_text = np.zeros(self.config.tokenizer_max_length, dtype=np.int32)
-            padding_mask = np.ones(self.config.tokenizer_max_length, dtype=np.float32)
-        else:
-            tokenized_text = encoded_text["input_ids"][0]
-            padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
-
-        return tokenized_text, padding_mask
-
-    @property
-    def vocab_size(self):
-        return self.tokenizer.vocab_size
-
 class TripleDataset(torch.utils.data.Dataset):
-    def __init__(self, root, filename):
-        self.json_file = json.load(open(os.path.join(root, filename)))
+    def __init__(self, root, mode, filename):
+        self.root = os.path.join(root, mode)
+        self.json_file = json.load(open(os.path.join(self.root, filename)))
+        self.mode = mode
         self.triples = self._prepro()
 
     def __getitem__(self, idx):
@@ -515,8 +36,8 @@ class TripleDataset(torch.utils.data.Dataset):
         return len(self.triples)
     
     def _prepro(self):
-        ent2id = json.load(open(os.path.join(self.root, 'entity2ids.json')))
-        rel2id = json.load(open(os.path.join(self.root, 'relation2ids_allrel.json')))
+        ent2id = json.load(open(os.path.join(self.root, 'entity2ids_zsl.json')))
+        rel2id = json.load(open(os.path.join(self.root, 'relation2ids.json')))
         triples = list()
         for rel in self.json_file.keys():
             for triple in self.json_file[rel]:
@@ -535,6 +56,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
 
         config.image_only = False
         config.text_only = False
+        config.struct_only = False
         config.tokenize = True
         config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/bert-base-uncased-tokenizer"
         config.tokenizer_max_length = 64
@@ -558,12 +80,13 @@ class MMKGDataset(torch_geometric.data.Dataset):
             config.update(ConfigDict(updates).copy_and_resolve_references())
         return config
     
-    def __init__(self, config, train_file, name, root, mode, mm_info, transform=None, pre_transform=None):
+    def __init__(self, config, train_file, name, root, mode, mm_info, rel_des_file, transform=None, pre_transform=None):
         self.config = self.get_default_config(config)
         assert self.config.image_only != self.config.text_only or (self.config.image_only == self.config.text_only and self.config.text_only == False)
         self.name = name
         self.root = root
         self.train_file = train_file
+        self.rel_description_file = rel_des_file
         
         super().__init__(os.path.join(root, mode), transform, pre_transform)
 
@@ -609,7 +132,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
 
     @property
     def raw_file_names(self):
-        return [self.train_file, 'entity2ids.json', 'relation2ids.json']
+        return [self.train_file, 'entity2ids_zsl.json', 'relation2ids.json']
     
     @property
     def processed_file_names(self):
@@ -748,8 +271,9 @@ class MMKGDataset(torch_geometric.data.Dataset):
             padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
         return tokenized_text, padding_mask
     
-    def generate_batch(self, node_list):
+    def generate_batch(self, node_list, batch_rels):
         batch_unprocessed_data = [self.mm_info[idx] for idx in node_list]
+        batch_rel_des = [self.rel_description_file[idx] for idx in batch_rels]
         mm_batch = defaultdict(list)
         for node_info in batch_unprocessed_data:
             if node_info.__len__() == 2:
@@ -768,13 +292,17 @@ class MMKGDataset(torch_geometric.data.Dataset):
                     mm_batch['image'].append(image)
                     if self.config.image_only:
                         continue
-
             try:
                 text, text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
                 mm_batch['text'].append(text)
                 mm_batch['text_padding_mask'].append(text_padding_mask)
             except:
                 mm_batch['text'].append(text_ori)
+        
+        for des in batch_rel_des:
+            des_tokens, des_padding_mask = self._text_prepro(des, self.config.unpaired_tokenizer_max_length)
+            mm_batch['rel_des'].append(des_tokens)
+            mm_batch['rel_des_padding_mask'].append(des_padding_mask)
 
         if len(mm_batch['image']) != 0:
             mm_batch['image'] = torch.stack(mm_batch['image'], dim = 0).to(torch.float32)
@@ -782,11 +310,35 @@ class MMKGDataset(torch_geometric.data.Dataset):
             mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.int32)
         mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32)
         mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32)
-        # mm_batch['unpaired_text'] = torch.tensor(np.array(mm_batch['unpaired_text']), dtype=torch.int32)
-        # mm_batch['unpaired_text_padding_mask'] = torch.tensor(np.array(mm_batch['unpaired_text_padding_mask']), dtype=torch.float32)
+        mm_batch['rel_des'] = torch.tensor(np.array(mm_batch['rel_des']), dtype=torch.int32)
+        mm_batch['rel_des_padding_mask'] = torch.tensor(np.array(mm_batch['rel_des_padding_mask']), dtype=torch.float32)
+        return mm_batch
+
+        for node_info in batch_unprocessed_data:
+            if node_info.__len__() == 1:
+                images_ori = node_info[0]
+                if not self.config.text_only:
+                    image = self._image_prepro(images_ori)
+                    mm_batch['image'].append(image)
+                    if self.config.image_only:
+                        continue
+            else:
+                if not self.config.text_only:
+                    image = torch.empty(self.config.image_size, self.config.image_size, 3)
+                    torch.nn.init.xavier_uniform_(image)
+                    image *= 10
+                    mm_batch['image'].append(image)
+                    if self.config.image_only:
+                        continue
+
+        if len(mm_batch['image']) != 0:
+            mm_batch['image'] = torch.stack(mm_batch['image'], dim = 0).to(torch.float32)
+        else:
+            mm_batch['image'] = torch.tensor(np.array(mm_batch['image']), dtype=torch.int32)
+        mm_batch['text'] = torch.tensor(np.array(mm_batch['text']), dtype=torch.int32)
+        mm_batch['text_padding_mask'] = torch.tensor(np.array(mm_batch['text_padding_mask']), dtype=torch.float32)
         return mm_batch
     
-
 class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
     @staticmethod
     def get_default_config(updates=None):
@@ -797,8 +349,10 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         config.random_start = True
 
         config.image_only = False
+        config.text_only = False
+        config.struct_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models//media/omnisky/sdb/grade2020/cairui/Dawnet/m3ae/pretrain_models/bert-base-uncased-bert-models-tokenizer"
+        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/bert-base-uncased-tokenizer"
         config.tokenizer_max_length = 64
         config.unpaired_tokenizer_max_length = 320
         
@@ -820,14 +374,18 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
             config.update(ConfigDict(updates).copy_and_resolve_references())
         return config
     
-    def __init__(self, config, root, graph_dataset):
+    def __init__(self, config, e2id, r2id, triples, mm_info, rel_des_file):
         self.config = self.get_default_config(config)
-        self.root = root
-        with open(os.path.join(self.root, 'MultiModalInfo.pkl'), 'rb') as fin:
-            self.mm_info = pickle.load(fin)
-        self.num_nodes = graph_dataset.num_nodes
-        self.graph_dataset = graph_dataset
-        #self.triples, self.num_nodes = self._prepro(train_tasks)
+        self.triples = triples
+        if triples.__len__() == 3:
+            h, r, t = triples
+            self.triples = [[h_i, r_i, t_i] for h_i, r_i, t_i in zip(h, r, t)]
+        self.rel_descriptions = rel_des_file
+        self.mm_info = mm_info
+        self.e2id = e2id
+        self.r2id = r2id
+        self.num_nodes = len(e2id)
+        self.num_relations = len(r2id)
 
         if self.config.image_normalization == 'imagenet':
             self.image_mean = (0.485, 0.456, 0.406)
@@ -866,10 +424,9 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         )
 
     def __getitem__(self, idx):
-        # select_node = idx % self.num_nodes
-        # sub_graph = NeighborLoader(self.graph_dataset, num_neighbors=[3, 3], input_nodes=torch.Tensor([select_node]).to(torch.long))
         triple = self.triples[idx]
         h, r, t = triple
+        description = self.rel_descriptions[r]
         if self.mm_info[h].__len__() == 2:
             image_ori, text_ori = self.mm_info[h]
         else:
@@ -882,10 +439,14 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
             image_ori, text_ori = None, self.mm_info[t][0]
         tail_batch = self._multimodal_prepro(image_ori, text_ori)
         
-        images = [head_batch['image'], tail_batch['image']]
-        texts = [head_batch['text'], tail_batch['text']]
-        text_padding_masks = [head_batch['text_padding_mask'], tail_batch['text_padding_mask']]
-        return triple, images, texts, text_padding_masks
+        rel_des, rel_des_pad_mask = self._text_prepro(description, self.config.unpaired_tokenizer_max_length)
+        image_head = head_batch['image']
+        #image_tail = tail_batch['image']
+        text_head = head_batch['text']
+        #text_tail = tail_batch['text']
+        text_pad_mask_head = head_batch['text_padding_mask']
+        #text_pad_mask_tail = tail_batch['text_padding_mask']
+        return torch.tensor(triple), image_head, text_head, text_pad_mask_head, rel_des, rel_des_pad_mask
     
     def __len__(self):
         return len(self.triples)
@@ -893,18 +454,6 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
     @property
     def vocab_size(self):
         return self.tokenizer.vocab_size
-    
-    def _prepro(self, train_tasks_name):
-        ent2id = json.load(open(os.path.join(self.root, 'entity2ids.json')))
-        num_nodes = len(ent2id)
-        rel2id = json.load(open(os.path.join(self.root, 'relation2ids_allrel.json')))
-        train_tasks = json.load(open(os.path.join(self.root, train_tasks_name)))
-        triples = list()
-        for rel in train_tasks.keys():
-            for triple in train_tasks[rel]:
-                h, r, t = triple
-                triples.append([ent2id[h], rel2id[r], ent2id[t]])
-        return triples, num_nodes
     
     def _multimodal_prepro(self, image_ori, text_ori):
         batch = dict()
@@ -924,7 +473,7 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
             batch['image'] = np.random.randn(256, 256, 3)
             batch['ispaired'] = False
             try:
-                unpaired_text, unpaired_text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length )
+                unpaired_text, unpaired_text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
                 batch['text'] = unpaired_text
                 batch['text_padding_mask'] = unpaired_text_padding_mask
             except:
@@ -940,9 +489,9 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
             image = rgba2rgb(image)
 
         image = (
-            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0).numpy()
+            self.transform_image(Image.fromarray(np.uint8(image))).permute(1, 2, 0)
         )
-        image = image.astype(np.float32)
+        #image = image.astype(np.float32)
         return image
     
     def _text_prepro(self, text, tokenizer_max_length):
@@ -963,21 +512,39 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         else:
             tokenized_text = encoded_text["input_ids"][0]
             padding_mask = 1.0 - encoded_text["attention_mask"][0].astype(np.float32)
-        return tokenized_text, padding_mask
-
-
-if __name__ == '__main__':
-    # device = 'cpu'
-    # graph_dataset = MMKGDataset(config=MMKGDataset.get_default_config(), name='FB15K-237', root='../origin_data/FB15K-237', device=device)
-    # graph_dataset.generate_batch(torch.arange(1, 100))
-    dataset = MultiModalKnowledgeGraphDataset(MultiModalKnowledgeGraphDataset.get_default_config(), '../origin_data/FB15K-237', 'train_tasks_all.json')
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=128,
-        drop_last=True,
-        shuffle=True,
-        num_workers=8,
-        prefetch_factor=2,
-        persistent_workers=True,
-    )
+        return tokenized_text, padding_mask    
     
+    def get_batch(self, triples : list):
+        '''
+            triples should contain three list: heads relations tails
+        '''
+        batch = defaultdict(list)
+        hs, rs, ts = triples
+        for h, r, t in zip(hs, rs, ts):
+            batch['triples'].append([h, r, t])
+
+            description = self.rel_descriptions[r]
+            if self.mm_info[h].__len__() == 2:
+                image_ori, text_ori = self.mm_info[h]
+            else:
+                image_ori, text_ori = None, self.mm_info[h][0]
+
+            head_batch = self._multimodal_prepro(image_ori, text_ori)
+            batch['image'].append(head_batch['image'])
+            batch['text'].append(head_batch['text'])
+            batch['text_padding_mask'].append(head_batch['text_padding_mask'])
+
+            rel_des, rel_des_pad_mask = self._text_prepro(description, self.config.unpaired_tokenizer_max_length)
+            batch['rel_des'].append(rel_des)
+            batch['rel_des_padding_mask'].append(rel_des_pad_mask)
+
+        batch['triples'] = torch.tensor(np.array(batch['triples']), dtype=torch.int64)
+        if len(batch['image']) != 0:
+            batch['image'] = torch.stack(batch['image'], dim = 0).to(torch.float32)
+        else:
+            batch['image'] = torch.tensor(np.array(batch['image']), dtype=torch.int32)
+        batch['text'] = torch.tensor(np.array(batch['text']), dtype=torch.int32)
+        batch['text_padding_mask'] = torch.tensor(np.array(batch['text_padding_mask']), dtype=torch.float32)
+        batch['rel_des'] = torch.tensor(np.array(batch['rel_des']), dtype=torch.int32)
+        batch['rel_des_padding_mask'] = torch.tensor(np.array(batch['rel_des_padding_mask']), dtype=torch.float32)
+        return batch

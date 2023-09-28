@@ -6,10 +6,10 @@ def read_options():
     # Base settlement
     parser.add_argument("--dataset", default="FB15K-237-clear", type=str)
     parser.add_argument("--seed", default=233, type=int)
-    parser.add_argument("--cuda", default=0, type=int)
+    parser.add_argument("--cuda", default=1, type=int)
     parser.add_argument('--model_type', default='tiny', type=str)
-    parser.add_argument('--saved_model_name', default='FB15K-237-clear', type=str)
-    parser.add_argument('--pretrained_model_name', default='epoch200_pretrained_FB15K-237-clear', type=str)
+    parser.add_argument('--saved_model_name', default='unb_zsl_FB15K-237-clear', type=str)
+    parser.add_argument('--pretrained_model_name', default='', type=str)
     parser.add_argument('--evaluate', action='store_true')
     # Multiprocessing info
     parser.add_argument('--nodes', default=1, type=int, metavar='N')
@@ -18,29 +18,29 @@ def read_options():
     parser.add_argument('--nr', default=0, type=int,
                         help='ranking within the nodes')
     # fusion modal Specification
-    parser.add_argument('--batch_size', default=32, type=int)
-    parser.add_argument('--sample_size', default=5, type=int)
+    parser.add_argument('--batch_size', default=200, type=int)
     parser.add_argument('--epochs', default=100, type=int)
-    parser.add_argument('--start_epoch', default=200, type=int)
-    parser.add_argument('--save_epochs', default=10, type=int)
+    parser.add_argument('--start_epoch', default=5, type=int)
+    parser.add_argument('--save_epochs', default=5, type=int)
     parser.add_argument('--dataloader_n_workers', default=4, type=int)
     parser.add_argument('--image_mask_ratio', default='0.75', type=float)
     parser.add_argument('--text_mask_ratio', default='0.75', type=float)
     parser.add_argument('--patch_size', default=16, type=int)
-    parser.add_argument('--image_loss_weight', default=0.5, type=float)
+    parser.add_argument('--image_loss_weight', default=0.7, type=float)
     parser.add_argument('--text_loss_weight', default=0.5, type=float)
-    parser.add_argument('--gcn_loss_weight', default=0.6, type=float)
+    parser.add_argument('--gcn_loss_weight', default=0.7, type=float)
     parser.add_argument('--contrastive_loss_weight', default=0.5, type=float)
     parser.add_argument('--image_all_token_loss', default=False, type=bool)
     parser.add_argument('--text_all_token_loss', default=False, type=bool)
     # Optimization Part
-    parser.add_argument('--discretized_image', default=False, type=bool)
-    parser.add_argument('--lr_warmup_epochs', default=3, type=int)
-    parser.add_argument('--accumulate_grad_steps', default=1, type=int)
+    parser.add_argument('--lr_maximum', default=0.0001, type=float)
     parser.add_argument('--lr_minimum', default=0.0, type=float)
+    parser.add_argument('--discretized_image', default=False, type=bool)
+    parser.add_argument('--lr_warmup_epochs', default=2, type=int)
+    parser.add_argument('--accumulate_grad_steps', default=1, type=int)
 
     ## GCN part
-    parser.add_argument('--emb_dim', default=200, type=int)
+    parser.add_argument('--emb_dim', default=1024, type=int)
     
     # Wgan Specification
     parser.add_argument("--embed_model", default="TransM3AE", type=str)

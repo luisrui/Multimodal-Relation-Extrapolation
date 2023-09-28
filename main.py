@@ -14,14 +14,19 @@ import itertools
 import json
 import pickle
 
-from args import read_options
-from module.utils import set_random_seed, generate_fix_samples
+#from args import read_options
+from args_openbg import read_options
+from module.utils import set_random_seed, generate_fix_samples, WandBLogger
 from module.model import UnifiedModel
 from module.data import MMKGDataset
 from module.NegativeSampling import NegativeSampling
 from module.loss import MarginLoss
 
 def main(args):
+    logger = WandBLogger(
+        config=WandBLogger.get_default_config(),
+        variant=args,
+    )
     device = 'cuda:' + str(args.cuda) if int(args.cuda) >= 0 else 'cpu'
     set_random_seed(args.seed)
     # Instantiation of multimodal Graph Dataset
@@ -46,7 +51,7 @@ def main(args):
     print('Start dataset preprocessing!')
     graph_train_dataset = MMKGDataset(
         config=MMKGDataset.get_default_config(),
-        train_file='train_tasks_clear.json',
+        train_file='train_tasks.json',
         name=args.dataset,  
         root=data_path,
         mode='train',
@@ -87,7 +92,7 @@ def main(args):
 
     steps_per_epoch = len(dataloader)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
         T_0=args.lr_warmup_epochs * steps_per_epoch // args.accumulate_grad_steps,
@@ -98,6 +103,9 @@ def main(args):
     start_step = 0
 
     losses = deque([], steps_per_epoch)
+    losses_struc = deque([], steps_per_epoch)
+    losses_image = deque([], steps_per_epoch)
+    losses_text = deque([], steps_per_epoch)
     print('Start Fusion Training!\n')
     model.train()
     epoch_counter = trange(start_step, args.epochs, ncols=0)
@@ -114,35 +122,54 @@ def main(args):
             else:
                 batch_data['text'] = batch_data['text'].to(device)
             # batch_data['image'] = None
-            # batch_data['text'] = None  
+            # batch_data['text'] = None 
             batch_data['text_padding_mask'] = batch_data['text_padding_mask'].to(device)
             optimizer.zero_grad()
-            loss, info = model(
-                local_global_id={k: v.item() for k, v in zip(range(len(n_id)), n_id)},
-                edge_index=adjs.edge_index.to(device),
-                edge_type=graph.edge_type[adjs.e_id], 
-                batch=batch_data
-            )
-            loss = loss.to(device)
-            loss.backward()
-            optimizer.step()
-            scheduler.step(epoch + step / steps_per_epoch)
-
-            losses.append(loss.item())
-            epoch_counter.set_description("Epoch %d |loss: %f |struc_loss: %.2f |image_loss: %.2f |text_loss: %.2f " % (
-                epoch + args.start_epoch + 1,
-                np.mean(losses), 
-                info['struc_loss'], 
-                info['image_loss'], 
-                info['text_loss'],
+            if len(adjs.edge_index[0]) != 0:
+                loss, info = model(
+                    local_global_id={k: v.item() for k, v in zip(range(len(n_id)), n_id)},
+                    edge_index=adjs.edge_index.to(device),
+                    edge_type=graph.edge_type[adjs.e_id], 
+                    batch=batch_data
                 )
-            )
+                loss = loss.to(device)
+                loss.backward()
+                optimizer.step()
+                scheduler.step(epoch + step / steps_per_epoch)
+
+                losses.append(loss.item())
+                epoch_counter.set_description("Epoch %d |loss: %.3f |struc_loss: %.2f |image_loss: %.2f |text_loss: %.2f |con_loss: %.2f " % (
+                    epoch + args.start_epoch + 1,
+                    np.mean(losses), 
+                    info['struc_loss'], 
+                    info['image_loss'], 
+                    info['text_loss'],
+                    info['contrastive_loss']
+                    )
+                )
+                losses_struc.append(info['struc_loss'])
+                losses_image.append(info['image_loss'])
+                losses_text.append(info['text_loss'])
+            else: print(adjs)
         print(f'epoch{epoch + args.start_epoch + 1} loss is {np.mean(losses)}!')
+        log_metrics = {
+            'epoch' : epoch + 1,
+            'whole loss' : np.mean(losses),
+            'structure loss' : np.mean(losses_struc),
+            'image loss' : np.mean(losses_image),
+            'text loss' : np.mean(losses_text),
+            'contrastive_loss' : info['contrastive_loss']
+        }
+        logger.log(log_metrics)
         losses.clear()
+        losses_struc.clear()
+        losses_image.clear()
+        losses_text.clear()
         if (epoch + 1) % args.save_epochs == 0:
             print(f'\n save model at epoch{epoch + args.start_epoch + 1}!')
-            evaluate(args, mm_info, triples, mode='dev')
             model.save_checkpoint(f"./saved_models/epoch{epoch + args.start_epoch + 1}_{args.saved_model_name}.ckpt")
+            evaluate(args, mm_info, model, mode='dev')
+            model.model.set_evaluate(False)
     print('Finish Training\n')
     model.save_checkpoint(f"./saved_models/{args.saved_model_name}.ckpt")
 
@@ -152,14 +179,14 @@ def evaluate(args, mm_info, model, mode='test'):
     # Instantiation of multimodal Graph Dataset
     data_path = osp.join('./origin_data', args.dataset)
     
-    hits_at_k = [1, 3, 7]
+    hits_at_k = [1, 3, 10]
     #Load test info
     print(f'Start load {mode} dataset!')
     with open(os.path.join(data_path, f'{mode}/sub_{mode}_samples.json'), 'r') as f:
         test_tasks = json.load(f)
     graph_test_dataset = MMKGDataset(
         config=MMKGDataset.get_default_config(),
-        train_file=f'{mode}_tasks_clear.json',
+        train_file=f'{mode}_tasks.json',
         name=args.dataset,  
         root=data_path, 
         mode=mode,
@@ -169,6 +196,7 @@ def evaluate(args, mm_info, model, mode='test'):
 
     print('Start evaluation!\n')
     model.eval()
+    model.model.set_evaluate(True)
     ranks = []
     step_counter = trange(0, len(test_tasks), ncols=0)
     for step in step_counter:
@@ -211,56 +239,55 @@ def evaluate(args, mm_info, model, mode='test'):
     hits = []
     for k in hits_at_k:
         hits.append(sum([1.0 if rank <= k else 0.0 for rank in ranks]) / len(ranks))
-    hits_at_1, hits_at_3, hits_at_7 = hits
+    hits_at_1, hits_at_3, hits_at_10 = hits
     print(f'[Final Scores] '
             f'MRR: {mrr} \t'
             f'Hits@1: {hits_at_1} \t'
             f'Hits@3: {hits_at_3} \t'
-            f'Hits@7: {hits_at_7}')
-
+            f'Hits@10: {hits_at_10}')
 
 if __name__ == "__main__":
     args = read_options()
     if not args.evaluate:
         main(args)
     else:
-        try:
-            device = 'cuda:' + str(args.cuda) if int(args.cuda) >= 0 else 'cpu'
-            data_path = osp.join('./origin_data', args.dataset)
-            with open(os.path.join(data_path, 'MultiModalInfo.pkl'), 'rb') as f:
-                print(f'Loading base dataset from {f.name}')
-                mm_info = pickle.load(f)
+        device = 'cuda:' + str(args.cuda) if int(args.cuda) >= 0 else 'cpu'
+        # device = 'cpu'
+        data_path = osp.join('./origin_data', args.dataset)
+        with open(os.path.join(data_path, 'MultiModalInfo.pkl'), 'rb') as f:
+            print(f'Loading base dataset from {f.name}')
+            mm_info = pickle.load(f)
 
-            graph_train_dataset = MMKGDataset(
-                config=MMKGDataset.get_default_config(),
-                train_file='train_tasks.json',
-                name=args.dataset,  
-                root=data_path,
-                mode='train',
-                mm_info=mm_info,
-            )
-            part_model = UnifiedModel(
-                args=args,
-                hidden_channels=200,
-                dataset=graph_train_dataset,
-                num_relations=235
-            )
-            model = NegativeSampling(
-                args = args,
-                whole_triples=None,
-                model= part_model,
-                loss_fn = MarginLoss(margin=3.0),
-                neg_rel = 0,
-                neg_ent = 1,
-                sampling_mode = 'normal'
-            ).to(device)
-
-            print(f'Loading pretrained model:{args.pretrained_model_name}')
-            model.load_checkpoint(f"./saved_models/{args.pretrained_model_name}.ckpt")
-            evaluate(args, mm_info, model, mode='test')
-        except:
-            print('Pretrained model invalid!')
-            exit()
+        graph_train_dataset = MMKGDataset(
+            config=MMKGDataset.get_default_config(),
+            train_file='train_tasks.json',
+            name=args.dataset,  
+            root=data_path,
+            mode='train',
+            mm_info=mm_info,
+        )
+        part_model = UnifiedModel(
+            args=args,
+            hidden_channels=200,
+            dataset=graph_train_dataset,
+            num_relations=235
+        )
+        model = NegativeSampling(
+            args = args,
+            whole_triples=None,
+            model= part_model,
+            loss_fn = MarginLoss(margin=3.0),
+            neg_rel = 0,
+            neg_ent = 1,
+            sampling_mode = 'normal'
+        ).to(device)
+        #try:
+        print(f'Loading pretrained model:{args.pretrained_model_name}')
+        model.load_checkpoint(f"./saved_models/{args.pretrained_model_name}.ckpt")
+        evaluate(args, mm_info, model, mode='test')
+        # except:
+        #     print('Pretrained model invalid!')
+        #     exit()
     # device = 'cuda:' + str(args.cuda) if int(args.cuda) >= 0 else 'cpu'
     # set_random_seed(args.seed)
     # # Instantiation of multimodal Graph Dataset
@@ -283,7 +310,7 @@ if __name__ == "__main__":
 
     # graph_train_dataset = MMKGDataset(
     #     config=MMKGDataset.get_default_config(),
-    #     train_file='train_tasks_clear.json',
+    #     train_file='train_tasks.json',
     #     name=args.dataset,  
     #     root=data_path,
     #     mode='train',
