@@ -15,56 +15,6 @@ from module.model import (
 )
 from module.vqgan import get_image_tokenizer
 from module.submodule import BaseModule
-
-class BaseModule(nn.Module):
-
-	def __init__(self):
-		super(BaseModule, self).__init__()
-		self.zero_const = nn.Parameter(torch.Tensor([0]))
-		self.zero_const.requires_grad = False
-		self.pi_const = nn.Parameter(torch.Tensor([3.14159265358979323846]))
-		self.pi_const.requires_grad = False
-
-	def load_checkpoint(self, path, device):
-		self.load_state_dict(torch.load(os.path.join(path), map_location=device))
-		self.eval()
-
-	def save_checkpoint(self, path):
-		torch.save(self.state_dict(), path)
-
-	def load_parameters(self, path):
-		f = open(path, "r")
-		parameters = json.loads(f.read())
-		f.close()
-		for i in parameters:
-			parameters[i] = torch.Tensor(parameters[i])
-		self.load_state_dict(parameters, strict = False)
-		self.eval()
-
-	def save_parameters(self, path):
-		f = open(path, "w")
-		f.write(json.dumps(self.get_parameters("list")))
-		f.close()
-
-	def get_parameters(self, mode = "numpy", param_dict = None):
-		all_param_dict = self.state_dict()
-		if param_dict == None:
-			param_dict = all_param_dict.keys()
-		res = {}
-		for param in param_dict:
-			if mode == "numpy":
-				res[param] = all_param_dict[param].cpu().numpy()
-			elif mode == "list":
-				res[param] = all_param_dict[param].cpu().numpy().tolist()
-			else:
-				res[param] = all_param_dict[param]
-		return res
-
-	def set_parameters(self, parameters):
-		for i in parameters:
-			parameters[i] = torch.Tensor(parameters[i])
-		self.load_state_dict(parameters, strict = False)
-		self.eval()
 		
 class NegativeSampling(BaseModule):
 	def __init__(
@@ -103,8 +53,8 @@ class NegativeSampling(BaseModule):
 		#self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
 		#self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
 		self.feature_extractor = nn.Linear(self.model.dim * 2, self.model.dim)
-		if args.discretized_image:
-			self.vq_model = MaskGitVQGAN.from_pretrained("/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/maskgit")
+		# if args.discretized_image:
+		# 	self.vq_model = MaskGitVQGAN.from_pretrained("/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/maskgit")
 		if whole_triples is not None:
 			h, r, t = whole_triples
 			self.__count_htr(h, r, t)
@@ -190,7 +140,7 @@ class NegativeSampling(BaseModule):
 		expand_edge_type = torch.tensor(batch_r.squeeze().flatten(), dtype=torch.int32)
 		return expand_edge_index, expand_edge_type
 	
-	def _calc(self, h, t, r, mode='normal', score_model='distmult'):
+	def _calc(self, h, t, r, mode='normal', score_model='transe'):
 		if score_model == 'transe':
 			if self.score_norm_flag:
 				h = F.normalize(h, 2, -1)
@@ -264,17 +214,18 @@ class NegativeSampling(BaseModule):
 		edge_type_expand = edge_type_expand.to(device)
 		rel_emb_expand = rel_emb.repeat(1 + self.neg_ent, 1).to(device)
 
-		cen_score = self.centroid_loss(x_gcn, edge_index_expand, edge_type_expand, rel_emb_expand)
-		c_pos_score = self._get_positive_score(cen_score, len(edge_type))
-		c_neg_score = self._get_negative_score(cen_score, len(edge_type))
-		loss_rel_center = self.loss_fn(c_pos_score, c_neg_score)
+		# cen_score = self.centroid_loss(x_gcn, edge_index_expand, edge_type_expand, rel_emb_expand)
+		# c_pos_score = self._get_positive_score(cen_score, len(edge_type))
+		# c_neg_score = self._get_negative_score(cen_score, len(edge_type))
+		# loss_rel_center = self.loss_fn(c_pos_score, c_neg_score)
 
 		score = self.scoring_fn(local_global_id, x_gcn, rel_emb_expand, edge_index_expand, edge_type_expand)
 		pos_score = self._get_positive_score(score, len(edge_type))
 		neg_score = self._get_negative_score(score, len(edge_type))
 		loss_res_gcn = self.loss_fn(pos_score, neg_score)
 
-		struct_loss = loss_rel_center + loss_res_gcn
+		#struct_loss = loss_rel_center + loss_res_gcn
+		struct_loss = loss_res_gcn
 		if self.regul_rate != 0:
 			struct_loss += self.regul_rate * self.regularization(x_gcn, rel_emb_expand, edge_index_expand, edge_type_expand)
 
@@ -334,7 +285,6 @@ class NegativeSampling(BaseModule):
 		info = dict(
 			struct_loss = struct_loss,
 			gcn_loss=loss_res_gcn,
-			center_loss=loss_rel_center,
 			loss_image_text=loss_image_text,
 			image_loss=image_loss,
 			text_loss=text_loss,
@@ -342,23 +292,18 @@ class NegativeSampling(BaseModule):
 		)
 		return loss, info
 	
-	def evaluate(self, local_global_id, batch_size, edge_index_expand, edge_type_expand, batch, deterministic=True):
-		device = self.get_model_device()
-		edge_index = edge_index_expand[:, :batch_size].to(device)
-		edge_type = edge_type_expand[:batch_size].to(device)
-		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
-		# try:
-		# 	x_gcn, _ = self.model(
-		# 		edge_index, edge_type, batch, deterministic)
-		# except:
-		x_gcn = self.model(
-			edge_index, edge_type, batch, deterministic)
-		edge_index_expand = edge_index_expand.to(device)
-		edge_type_expand = edge_type_expand.to(device)
-		score = self.scoring_fn(local_global_id, x_gcn, edge_index_expand, edge_type_expand)
-		pos_score = self._get_positive_score(score, batch_size)
-		neg_score = self._get_negative_score(score, batch_size)
-		return pos_score, neg_score
+	def evaluate(self, h, r, t, score_model='transe'):
+		if score_model == 'transe':
+			if self.score_norm_flag:
+				h = F.normalize(h, 2, -1)
+				r = F.normalize(r, 2, -1)
+				t = F.normalize(t, 2, -1)
+			score = (h + r) - t
+			score = torch.norm(score, self.p_norm, -1).flatten()
+			return score
+		else:
+			print('invalid scoring model!')
+			return None
 
 	def regularization(self, x, relations, edge_index, edge_type):
 		batch_head = x[edge_index[0].long()]

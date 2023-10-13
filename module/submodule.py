@@ -53,7 +53,29 @@ class BaseModule(nn.Module):
 			parameters[i] = torch.Tensor(parameters[i])
 		self.load_state_dict(parameters, strict = False)
 		self.eval()
-          
+
+
+class LayerNormalization(nn.Module):
+    ''' Layer normalization module '''
+
+    def __init__(self, d_hid, eps=1e-3):
+        super(LayerNormalization, self).__init__()
+
+        self.eps = eps
+        self.a_2 = nn.Parameter(torch.ones(d_hid), requires_grad=True)
+        self.b_2 = nn.Parameter(torch.zeros(d_hid), requires_grad=True)
+
+    def forward(self, z):
+        if z.size(1) == 1:
+            return z
+
+        mu = torch.mean(z, keepdim=True, dim=-1)
+        sigma = torch.std(z, keepdim=True, dim=-1)
+        ln_out = (z - mu.expand_as(z)) / (sigma.expand_as(z) + self.eps)
+        ln_out = ln_out * self.a_2.expand_as(ln_out) + self.b_2.expand_as(ln_out)
+
+        return ln_out
+             
 # @title PyTorch transformer definition
 class MLP(nn.Module):
     def __init__(self, hidden_dim, output_dim, depth, input_norm=True):
@@ -215,4 +237,22 @@ class Transformer(nn.Module):
         x = self.layer_norm(x)
         return x
     
+class SupportEncoder(nn.Module):
+    """docstring for SupportEncoder"""
+    def __init__(self, d_model, d_inner, dropout=0.1):
+        super(SupportEncoder, self).__init__()
+        self.proj1 = nn.Linear(d_model, d_inner)
+        self.proj2 = nn.Linear(d_inner, d_model)
+        self.layer_norm = nn.LayerNorm(d_model)
 
+        nn.init.xavier_normal_(self.proj1.weight)
+        nn.init.xavier_normal_(self.proj2.weight)
+
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        residual = x
+        output = self.relu(self.proj1(x))
+        output = self.dropout(self.proj2(output))
+        return self.layer_norm(output + residual)

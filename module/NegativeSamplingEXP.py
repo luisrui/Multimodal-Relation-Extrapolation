@@ -13,7 +13,7 @@ from module.model import (
 	mask_intersection, all_mask, mask_not, Extractor
 )
 from module.submodule import BaseModule
-from module.loss import MarginLoss
+from module.loss import MarginLoss, SigmoidLoss
 		
 class NegativeSampling(BaseModule):
 	def __init__(
@@ -44,14 +44,14 @@ class NegativeSampling(BaseModule):
 		self.filter_flag = filter_flag
 		self.sampling_mode = sampling_mode
 		self.score_norm_flag = score_norm_flag
-		self.center_margin_loss = MarginLoss(margin=1.0)
+		self.center_margin_loss = SigmoidLoss()
 		self.p_norm = 1
 		if self.sampling_mode == "normal":
 			self.cross_sampling_flag = None
 		else:
 			self.cross_sampling_flag = 0
 
-		self.extractor = Extractor(embed_dim=self.args.emb_dim)
+		#self.extractor = Extractor(embed_dim=self.args.emb_dim)
 		self.ent_embedding = nn.Embedding(self.model.num_nodes, self.args.emb_dim)
 		self.embedding_range = nn.Parameter(
 			torch.Tensor([(self.args.emb_dim / 10 + 2) / self.args.emb_dim]), requires_grad=False
@@ -184,8 +184,8 @@ class NegativeSampling(BaseModule):
 	
 	def forward_center(self, h, r, t, ent_embs, rel_embs):
 		tail_embs = self.ent_embedding(t)
-		pair_embs = self.extractor(ent_embs, tail_embs)
-		cen_score = -1 * F.cosine_similarity(pair_embs, rel_embs, dim=1)
+		pair_embs = self.extractor(ent_embs, tail_embs) #(200, 200)400 -> 200
+		cen_score = F.cosine_similarity(pair_embs, rel_embs, dim=1)
 		return cen_score
 	
 	#Computing the loss of the whole model
@@ -193,21 +193,23 @@ class NegativeSampling(BaseModule):
 		device = self.get_model_device()
 		#################test
 		#n_id = torch.tensor(np.array(list(local_global_id.values())), dtype=torch.int32).to(device)
-		x_gcn, rel_emb, batch_output = self.model(batch, deterministic)
+		x_head_gcn, rel_emb, batch_output = self.model(batch, deterministic)
 
 		expand_h, expand_r, expand_t = self.neg_sample_fn(batch['triples'])
 		expand_h = expand_h.to(device)
 		expand_r = expand_r.to(device)
 		expand_t = expand_t.to(device)
-		x_gcn_expand = x_gcn.repeat(1 + self.neg_ent, 1).to(device)
+		x_gcn_expand = x_head_gcn.repeat(1 + self.neg_ent, 1).to(device)
 		rel_emb_expand = rel_emb.repeat(1 + self.neg_ent, 1).to(device)
-		loss_rel_center = 0
+		loss_rel_center = 0.0
 		
-		cen_score = self.forward_center(expand_h, expand_r, expand_t, x_gcn_expand, rel_emb_expand)
-		c_pos_score = self._get_positive_score(cen_score, batch['triples'].shape[0])
-		c_neg_score = self._get_negative_score(cen_score, batch['triples'].shape[0])
-		loss_rel_center = self.center_margin_loss(c_pos_score, c_neg_score)
+		# #ZSL
+		# cen_score = self.forward_center(expand_h, expand_r, expand_t, x_gcn_expand, rel_emb_expand)
+		# c_pos_score = self._get_positive_score(cen_score, batch['triples'].shape[0])
+		# c_neg_score = self._get_negative_score(cen_score, batch['triples'].shape[0])
+		# loss_rel_center = self.center_margin_loss(c_pos_score, c_neg_score)
 
+		#KGC
 		score = self.scoring_fn(expand_h, expand_r, expand_t, x_gcn_expand, rel_emb_expand)
 		pos_score = self._get_positive_score(score, batch['triples'].shape[0])
 		neg_score = self._get_negative_score(score, batch['triples'].shape[0])
@@ -322,7 +324,7 @@ class NegativeSampling(BaseModule):
 		neg = tmp[mask]
 		return neg
 
-	def __corrupt_tail(self, h, r, num_max = 1):
+	def __corrupt_tail(self, h, r, node_list, num_max = 1):
 		tmp = torch.randint(low = 0, high = self.ent_total, size = (num_max, )).numpy()
 		h_index, r_index= h.item(), r.item()
 		if not self.filter_flag:

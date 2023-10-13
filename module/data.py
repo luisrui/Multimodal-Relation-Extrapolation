@@ -3,24 +3,20 @@ import json
 import os
 import pickle
 
-import gcsfs
-import h5py
+
 import numpy as np
 import skimage.io
 import torch
-import torchvision
 import torch_geometric
-from torch_geometric.loader import NeighborSampler
-from torch_geometric.data import Data, Dataset
+from torch_geometric.data import Data 
 import transformers
 from ml_collections import ConfigDict
 from collections import defaultdict
 from PIL import Image
 from skimage.color import gray2rgb, rgba2rgb
-from timm.data import create_transform
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torchvision import transforms
 from tqdm import trange
+
 
 class TripleDataset(torch.utils.data.Dataset):
     def __init__(self, root, mode, filename):
@@ -87,6 +83,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
         self.root = root
         self.train_file = train_file
         self.rel_description_file = rel_des_file
+        self.num_relations = len(rel_des_file)
         
         super().__init__(os.path.join(root, mode), transform, pre_transform)
 
@@ -167,6 +164,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
         data = Data(edge_index=edge_index, edge_type=edge_type)
         #processed_path = os.path.join(self.processed_dir, self.processed_file_names[0])
         torch.save((data, None), self.processed_paths[0])
+        
     
     def len(self):
         return len(self.processed_file_names)
@@ -292,6 +290,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
                     mm_batch['image'].append(image)
                     if self.config.image_only:
                         continue
+            
             try:
                 text, text_padding_mask = self._text_prepro(text_ori, self.config.tokenizer_max_length)
                 mm_batch['text'].append(text)
@@ -441,12 +440,12 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         
         rel_des, rel_des_pad_mask = self._text_prepro(description, self.config.unpaired_tokenizer_max_length)
         image_head = head_batch['image']
-        #image_tail = tail_batch['image']
+        image_tail = tail_batch['image']
         text_head = head_batch['text']
-        #text_tail = tail_batch['text']
+        text_tail = tail_batch['text']
         text_pad_mask_head = head_batch['text_padding_mask']
-        #text_pad_mask_tail = tail_batch['text_padding_mask']
-        return torch.tensor(triple), image_head, text_head, text_pad_mask_head, rel_des, rel_des_pad_mask
+        text_pad_mask_tail = tail_batch['text_padding_mask']
+        return torch.tensor(triple), image_head, text_head, text_pad_mask_head, image_tail, text_tail, text_pad_mask_tail, rel_des, rel_des_pad_mask
     
     def __len__(self):
         return len(self.triples)
@@ -548,3 +547,4 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         batch['rel_des'] = torch.tensor(np.array(batch['rel_des']), dtype=torch.int32)
         batch['rel_des_padding_mask'] = torch.tensor(np.array(batch['rel_des_padding_mask']), dtype=torch.float32)
         return batch
+    

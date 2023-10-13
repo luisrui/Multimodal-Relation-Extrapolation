@@ -15,7 +15,8 @@ from tqdm import tqdm
 import os
 import json
 
-from .submodule import (MLP, Transformer)
+from .spectral_norm import spectral_norm
+from .submodule import (MLP, Transformer, LayerNormalization)
 from .utils import get_transformer_by_config, mask_select, merge_patches
 
 def first_fusion_train(model, batch : dict, args : dict):
@@ -514,12 +515,8 @@ class MaskedMultimodalAutoencoder(nn.Module):
         return image_output, text_output, image_mask, text_mask
 
 class UnifiedModel(nn.Module):
-    def __init__(self, args, hidden_channels, dataset, num_relations):
+    def __init__(self, args, hidden_channels, dataset, num_relations, noise_dim):
         super(UnifiedModel, self).__init__()
-        # if args.discretized_image:
-        #     image_output_dim = 16384
-        # else:
-        #     image_output_dim = args.patch_size * args.patch_size * 3
         image_output_dim = args.patch_size * args.patch_size * 3
         self.M3AEmodel = MaskedMultimodalAutoencoder(
             text_vocab_size=dataset.vocab_size,
@@ -540,14 +537,23 @@ class UnifiedModel(nn.Module):
         self.num_nodes = dataset.num_nodes
         self.reduced_dim = self.M3AEmodel.config.emb_dim
         self.dim = args.emb_dim
+        self.noise_dim = noise_dim
 
         if dataset.config.struct_only:
             self.node_embedding = nn.Embedding(self.num_nodes, self.reduced_dim)
-        self.des_rel_map_layer1 = nn.Linear(self.reduced_dim, self.dim) # 384 -> 200
-        self.des_rel_map_layer2 = nn.Linear(self.dim, self.dim) #200 -> 200s
-        self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
-        self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
+        des_rel_map_layer1 = nn.Linear(self.reduced_dim, self.dim)
+        self.des_rel_map_layer1 = spectral_norm(des_rel_map_layer1) # 384 -> 200
+        des_rel_map_layer2 = nn.Linear(self.dim, self.dim)
+        self.des_rel_map_layer2 = spectral_norm(des_rel_map_layer2) #200 -> 200s
+        generate_fc_layer = nn.Linear(self.reduced_dim + self.noise_dim, self.reduced_dim)
+        self.generate_fc_layer = spectral_norm(generate_fc_layer)
+        #self.conv1 = RGCNConv(in_channels=self.reduced_dim, out_channels=hidden_channels, num_relations=self.num_relations, num_bases=30)
+        #self.conv2 = RGCNConv(in_channels=hidden_channels, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
+        self.conv = RGCNConv(in_channels=self.reduced_dim, out_channels=self.dim, num_relations=self.num_relations, num_bases=30)
         self.activation = nn.LeakyReLU(negative_slope=0.2)
+        #self.dropout = nn.Dropout(0.2)
+        self.layer_norm = LayerNormalization(self.dim)
+        self.no_gcn_layer = nn.Linear(self.reduced_dim, self.dim)
 
     def get_model_device(self):
         return next(self.parameters()).device
@@ -556,9 +562,17 @@ class UnifiedModel(nn.Module):
         #x = self.dim_reduce1(x.transpose(-2, -1))
         #x = x.transpose(-2, -1)
         x = x.view(x.shape[0], -1)
-        x = self.conv1(x, edge_index, edge_type)
+        # x = self.conv1(x, edge_index, edge_type)
+        # x = self.activation(x)
+        # x = self.conv2(x, edge_index, edge_type)
+        x = self.conv(x, edge_index, edge_type)
         x = self.activation(x)
-        x = self.conv2(x, edge_index, edge_type)
+        return x
+    
+    def nogcn_forward_encoder(self, x, edge_index, edge_type):
+        x = x.view(x.shape[0], -1)
+        x = self.no_gcn_layer(x)
+        x = self.activation(x)
         return x
     
     def forward_contrastive(self, image_rep, text_rep, bidirect_contrast=False):
@@ -588,11 +602,13 @@ class UnifiedModel(nn.Module):
                 image=None,  text=description_tokens, text_padding_mask=des_padding_mask, deterministic=True
             )
         rel_emb = rel_emb.view(rel_emb.shape[0], -1)
+        #rel_emb = self.dropout(rel_emb)
         rel_emb = self.des_rel_map_layer1(rel_emb)
-        rel_emb = self.activation(rel_emb)
+        #rel_emb = self.activation(rel_emb)
         rel_emb = self.des_rel_map_layer2(rel_emb)
+        self.layer_norm(rel_emb)
         return rel_emb
-        
+  
     def forward(self, edge_index, edge_type, batch, deterministic=False):
         image = batch['image']
         text = batch['text']
@@ -604,28 +620,17 @@ class UnifiedModel(nn.Module):
             image_patches = extract_patches(image, self.patch_size)
         else:
             image_patches = None
-        # if image_patches is None and text is None:
-        #     cls_x = self.node_embedding(n_id)
-        # else:
-            # cls_x, x = self.M3AEmodel.forward_representation(
-            #     image=image_patches,  text=text, text_padding_mask=text_padding_mask, deterministic=True
-            # )
+
         cls_x, x = self.M3AEmodel.forward_representation(
             image=image_patches,  text=text, text_padding_mask=text_padding_mask, deterministic=True
         )
 
-        x_ecd = self.gcn_forward_encoder(cls_x, edge_index, edge_type) 
+        x_ecd = self.gcn_forward_encoder(cls_x, edge_index, edge_type)
+        #x_ecd = self.nogcn_forward_encoder(cls_x, edge_index, edge_type) 
         
         rel_emb = self.forward_relation_emb(
             description_tokens=descriptions, des_padding_mask=des_padding_mask
         )
-        # batch_output = dict(
-        #     image_output=0,
-        #     text_output=0,
-        #     image_mask=0,
-        #     text_mask=0
-        # )
-        # return x_ecd, batch_output
     
         if not self.is_evaluate:
             (
@@ -664,6 +669,20 @@ class UnifiedModel(nn.Module):
     
     def set_evaluate(self, flag : bool):
         self.is_evaluate = flag
+    
+    def generate(self, description_tokens, des_padding_mask, noise):
+        with torch.no_grad():
+            rel_emb, _ = self.M3AEmodel.forward_representation(
+                image=None,  text=description_tokens, text_padding_mask=des_padding_mask, deterministic=True
+            )
+        rel_emb = rel_emb.view(rel_emb.shape[0], -1)
+        x_noise = torch.cat([noise, rel_emb], dim=1)
+        x_noise = self.generate_fc_layer(x_noise)
+        x_noise = self.des_rel_map_layer1(x_noise)
+        #x_noise = self.activation(x_noise)
+        false = self.des_rel_map_layer2(x_noise)
+        false = self.layer_norm(false)
+        return false
 
 def patch_predict_fn(model, patch_size, batch):
     image = batch['image']
@@ -708,27 +727,26 @@ class ExpModel(nn.Module):
             self.node_embedding = nn.Embedding(self.num_nodes, self.reduced_dim)
         self.des_rel_map_layer1 = nn.Linear(self.reduced_dim, self.dim) # 384 -> 200
         self.des_rel_map_layer2 = nn.Linear(self.dim, self.dim) #200 -> 200s
-        self.conv1 = nn.Linear(self.reduced_dim, self.dim)
-        self.conv2 = nn.Linear(self.dim, self.dim)
+        self.mm_layer1 = nn.Linear(self.reduced_dim, self.dim)
+        self.mm_layer2 = nn.Linear(self.dim, self.dim)
         self.activation = nn.LeakyReLU(negative_slope=0.2)
+        self.dropout = nn.Dropout(0.2)
+        
     
     def forward(self, batch, deterministic=False):
 
-        if batch['image'] is not None:
-            image_patches_head = extract_patches(batch['image'], self.patch_size)
-            #image_patches_tail = extract_patches(batch['image_tail'], self.patch_size)
-        else:
-            #image_patches_head, image_patches_tail = None, None
-            image_patches_head = None
+        image_patches_head = extract_patches(batch['image_head'], self.patch_size)
+        image_patches_tail = extract_patches(batch['image_tail'], self.patch_size)
 
         cls_x_head, _ = self.M3AEmodel.forward_representation(
-            image=image_patches_head,  text=batch['text'], text_padding_mask=batch['text_padding_mask'], deterministic=True
+            image=image_patches_head,  text=batch['text_head'], text_padding_mask=batch['text_padding_mask_head'], deterministic=True
         )
-        # cls_x_tail, _ = self.M3AEmodel.forward_representation(
-        #     image=image_patches_tail,  text=batch['text_tail'], text_padding_mask=batch['text_padding_mask_tail'], deterministic=True
-        # )
+        cls_x_tail, _ = self.M3AEmodel.forward_representation(
+            image=image_patches_tail,  text=batch['text_tail'], text_padding_mask=batch['text_padding_mask_tail'], deterministic=True
+        )
 
         x_ecd_head = self.forward_entity_emb(cls_x_head)
+        x_ecd_tail = self.forward_entity_emb(cls_x_tail)
         
         rel_emb = self.forward_relation_emb(
             description_tokens=batch['rel_des'], des_padding_mask=batch['rel_des_padding_mask']
@@ -743,7 +761,7 @@ class ExpModel(nn.Module):
                 text_mask,
                 image_ids_restore,
                 text_ids_restore,
-            ) = self.M3AEmodel.forward_encoder(image_patches_head, batch['text'], batch['text_padding_mask'], deterministic)
+            ) = self.M3AEmodel.forward_encoder(image_patches_head, batch['text_head'], batch['text_padding_mask_head'], deterministic)
             image_output, text_output = self.M3AEmodel.forward_decoder(
                 cls_x,
                 image_x,
@@ -763,17 +781,18 @@ class ExpModel(nn.Module):
                 text_output=text_output,
                 image_mask=image_mask,
                 text_mask=text_mask,
-                contrastive_loss=loss_c
+                contrastive_loss=0.0
             )
-            return x_ecd_head, rel_emb, batch_output
+            return x_ecd_head, x_ecd_tail, rel_emb, batch_output
         else:
-            return x_ecd_head, rel_emb
+            return x_ecd_head, x_ecd_tail, rel_emb
     
     def forward_entity_emb(self, cls_x):
         cls_x = cls_x.view(cls_x.shape[0], -1)
-        cls_x = self.conv1(cls_x)
+        cls_x = self.dropout(cls_x)
+        cls_x = self.mm_layer1(cls_x)
         cls_x = self.activation(cls_x)
-        cls_x = self.conv2(cls_x)
+        cls_x = self.mm_layer2(cls_x)
         return cls_x
 
     def forward_relation_emb(self, description_tokens, des_padding_mask):
@@ -782,6 +801,7 @@ class ExpModel(nn.Module):
                 image=None,  text=description_tokens, text_padding_mask=des_padding_mask, deterministic=True
             )
         rel_emb = rel_emb.view(rel_emb.shape[0], -1)
+        rel_emb = self.dropout(rel_emb)
         rel_emb = self.des_rel_map_layer1(rel_emb)
         rel_emb = self.activation(rel_emb)
         rel_emb = self.des_rel_map_layer2(rel_emb)
@@ -811,96 +831,5 @@ class ExpModel(nn.Module):
     def set_evaluate(self, flag : bool):
         self.is_evaluate = flag
 
-class Extractor(nn.Module):
-    """
-    Matching metric based on KB Embeddings
-    """
-    def __init__(self, embed_dim, num_symbols=None, embed=None):
-        super(Extractor, self).__init__()
-        self.embed_dim = int(embed_dim)
-        # self.pad_idx = num_symbols
-        # self.symbol_emb = nn.Embedding(num_symbols + 1, embed_dim, padding_idx=num_symbols)
-        # self.num_symbols = num_symbols
+    # def zsl_learning_module():
 
-        # self.gcn_w = nn.Linear(self.embed_dim, int(self.embed_dim/2))
-        # self.gcn_b = nn.Parameter(torch.FloatTensor(self.embed_dim))
-
-        self.fc1 = nn.Linear(self.embed_dim, int(self.embed_dim/2))
-        self.fc2 = nn.Linear(self.embed_dim, int(self.embed_dim/2))
-
-        self.dropout = nn.Dropout(0.2)
-        self.dropout_e = nn.Dropout(0.2)
-
-        # self.symbol_emb.weight.data.copy_(torch.from_numpy(embed))
-
-        # self.symbol_emb.weight.requires_grad = False
-
-        #d_model = self.embed_dim * 2
-        #self.support_encoder = SupportEncoder(d_model, 2*d_model, dropout=0.2)
-        #self.query_encoder = QueryEncoder(d_model, process_steps)
-
-    def neighbor_encoder(self, connections, num_neighbors):
-        '''
-        connections: (batch, 200, 2)
-        num_neighbors: (batch,)
-        '''
-        num_neighbors = num_neighbors.unsqueeze(1)
-        entities = connections[:,:,1].squeeze(-1)
-        ent_embeds = self.dropout(self.symbol_emb(entities)) # (batch, 50, embed_dim)
-        concat_embeds = ent_embeds
-
-        out = self.gcn_w(concat_embeds)
-        out = torch.sum(out, dim=1) # (batch, embed_dim)
-        out = out / num_neighbors
-        return out.tanh()
-
-    def entity_encoder(self, entity1, entity2):
-        entity1 = self.dropout_e(entity1)
-        entity2 = self.dropout_e(entity2)
-        entity1 = self.fc1(entity1)
-        entity2 = self.fc2(entity2)
-        entity = torch.cat((entity1, entity2), dim=-1)
-        return entity.tanh() # (batch, embed_dim)
-
-    def forward_whole(self, query, support, query_meta=None, support_meta=None):
-        '''
-        query: (batch_size, 2)
-        support: (few, 2)
-        return: (batch_size, )
-        '''
-        query_left_connections, query_left_degrees, query_right_connections, query_right_degrees = query_meta
-        support_left_connections, support_left_degrees, support_right_connections, support_right_degrees = support_meta
-        
-        query_e1 = self.symbol_emb(query[:,0]) # (batch, embed_dim)
-        query_e2 = self.symbol_emb(query[:,1]) # (batch, embed_dim)
-        query_e = self.entity_encoder(query_e1, query_e2)
-
-        support_e1 = self.symbol_emb(support[:,0]) # (batch, embed_dim)
-        support_e2 = self.symbol_emb(support[:,1]) # (batch, embed_dim)
-        support_e = self.entity_encoder(support_e1, support_e2)
-
-        query_left = self.neighbor_encoder(query_left_connections, query_left_degrees)
-        query_right = self.neighbor_encoder(query_right_connections, query_right_degrees)
-
-        support_left = self.neighbor_encoder(support_left_connections, support_left_degrees)
-        support_right = self.neighbor_encoder(support_right_connections, support_right_degrees)
-        
-        query_neighbor = torch.cat((query_left, query_e,  query_right), dim=-1) # tanh
-        support_neighbor = torch.cat((support_left, support_e, support_right), dim=-1) # tanh
-
-        support = support_neighbor
-        query = query_neighbor
-
-        support_g = self.support_encoder(support) # 1 * 100
-        query_g = self.support_encoder(query)
-
-        support_g = torch.mean(support_g, dim=0, keepdim=True)
-
-        # cosine similarity
-        matching_scores = torch.matmul(query_g, support_g.t()).squeeze()
-
-        return query_g, matching_scores
-
-    def forward(self, head_emb, tail_emb):
-        query_e = self.entity_encoder(head_emb, tail_emb)
-        return query_e
