@@ -1,0 +1,5 @@
+torch==1.13.1
+torchvision==0.14.1
+torch_geometric==2.3.1
+scikit-image==0.19.2
+torch_sparse==0.6.15
