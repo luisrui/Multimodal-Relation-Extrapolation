@@ -13,7 +13,7 @@
 *.hdf5
 *.zip
 **/pretrained_models
-/origin_data/
+**/origin_data/add_files
 **/pretrain_models
 **/saved_models
 /cavmae/
