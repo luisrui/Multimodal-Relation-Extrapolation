@@ -1,6 +1,5 @@
 #/origin_data/
 /.vscode/
-/generative-models/WGAN/models/
 **/__pycache__
 **/data
 **/checkpoints
@@ -14,3 +13,12 @@
 *.hdf5
 *.zip
 **/pretrained_models
+/origin_data/
+**/pretrain_models
+**/saved_models
+/cavmae/
+*.bin
+*.gz
+**/TransAE
+**/TransE
+**/generative-models

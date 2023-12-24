@@ -553,7 +553,7 @@ class UnifiedModel(nn.Module):
         self.activation = nn.LeakyReLU(negative_slope=0.2)
         #self.dropout = nn.Dropout(0.2)
         self.layer_norm = LayerNormalization(self.dim)
-        self.no_gcn_layer = nn.Linear(self.reduced_dim, self.dim)
+        #self.no_gcn_layer = nn.Linear(self.reduced_dim, self.dim)
 
     def get_model_device(self):
         return next(self.parameters()).device
@@ -575,8 +575,8 @@ class UnifiedModel(nn.Module):
         x = self.activation(x)
         return x
     
-    def forward_contrastive(self, image_rep, text_rep, bidirect_contrast=False):
-        # calculate nce loss for mean-visual representation and mean-audio representation
+    def forward_contrastive(self, image_rep, text_rep, bidirect_contrast=True):
+        # calculate nce loss for mean-visual representation and mean-textual representation
         image_rep = torch.nn.functional.normalize(image_rep, dim=-1)
         text_rep = torch.nn.functional.normalize(text_rep, dim=-1)
 
@@ -651,6 +651,7 @@ class UnifiedModel(nn.Module):
                 text_padding_mask,
                 deterministic,
             )
+            
             if self.is_contrastive: # if contrastive loss is used
                 loss_c, c_acc = self.forward_contrastive(image_x.mean(dim=1), text_x.mean(dim=1))
             else:
@@ -711,7 +712,7 @@ class ExpModel(nn.Module):
         )
         self.is_evaluate = args.evaluate
         self.patch_size = args.patch_size
-        self.is_contrastive = False if args.contrastive_loss_weight == 0.0 or dataset.config.image_only or dataset.config.text_only else True
+        self.is_contrastive = True if args.contrastive_loss_weight == 0.0 or dataset.config.image_only or dataset.config.text_only else True
 
         self.paired_tokenizer_max_length = dataset.config.tokenizer_max_length
         self.token_num = dataset.config.unpaired_tokenizer_max_length
@@ -771,6 +772,7 @@ class ExpModel(nn.Module):
                 batch['text_padding_mask'],
                 deterministic,
             )
+            print(image_x.shape, text_x.shape)
             if self.is_contrastive: # if contrastive loss is used
                 loss_c, c_acc = self.forward_contrastive(image_x.mean(dim=1), text_x.mean(dim=1))
             else:
@@ -830,6 +832,3 @@ class ExpModel(nn.Module):
     
     def set_evaluate(self, flag : bool):
         self.is_evaluate = flag
-
-    # def zsl_learning_module():
-

@@ -753,3 +753,38 @@ class ZSLmodule(nn.Module):
 
     def load_pretrain(self):
         self.Extractor.load_state_dict(torch.load(os.path.join(self.save_path, "Extractor")))
+
+    def generate_entity_pair_emb(self, relations, generate_model):
+        self.load_pretrain()
+        #self.load(generate_model)
+        symbol2id = self.symbol2id
+        entity_pair_embs = []
+        rels = []
+        target_idx = []
+        for rel in relations:
+
+            # des_token = self.des_tokens[self.rel2id[rel]]
+            # des_tokens = des_token.unsqueeze(0).expand(self.test_sample, -1).to(self.device)
+            # des_pad_mask = self.des_pad_masks[self.rel2id[rel]]
+            # des_pad_masks = des_pad_mask.unsqueeze(0).expand(self.test_sample, -1).to(self.device)
+            # relation_vecs = generate_model.generate(des_tokens.to(self.device), des_pad_masks.to(self.device), self.test_noises)
+            # relation_vecs = relation_vecs.detach().cpu().numpy()
+
+            related_triples = self.test_tasks[rel]
+            entity_pairs = [[symbol2id[tri[0]], symbol2id[tri[2]]] for tri in related_triples]
+            query_left = [self.ent2id[tri[0]] for tri in related_triples]
+            query_right = [self.ent2id[tri[0]] for tri in related_triples]
+            query_meta = self.get_meta(query_left, query_right)
+            query = Variable(torch.LongTensor(entity_pairs)).cuda()
+            with torch.no_grad():
+                entity_pair_emb, _ = self.Extractor(
+                    query, query, query_meta, query_meta
+                )
+            print(entity_pair_emb.shape)
+            entity_pair_embs.append(entity_pair_emb.cpu())
+            rels += [rel for i in range(len(related_triples))]
+            #target_idx.append(len(rels))
+            #entity_pair_embs.append(relation_vecs.mean(dim=0).unsqueeze(dim=0))
+            #rels.append(rel)
+
+        return entity_pair_embs, rels, target_idx

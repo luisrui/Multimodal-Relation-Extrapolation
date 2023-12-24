@@ -99,6 +99,7 @@ class NegativeSampling(BaseModule):
 		# 	self.t_of_r[r] = np.array(list(self.t_of_r[r].keys()))
 		# 	self.lef_mean[r] = self.freqRel[r] / len(self.h_of_r[r])
 		# 	self.rig_mean[r] = self.freqRel[r] / len(self.t_of_r[r])
+		
 	
 	def scoring_fn(self, local_global_id, x, relations, edge_index, edge_type):
 		#batch_head = self.ent_embedding(self._global_mapping(local_global_id, edge_index[0]).to(self.get_model_device()))

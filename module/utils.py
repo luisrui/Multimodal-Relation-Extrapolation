@@ -33,7 +33,7 @@ class WandBLogger(object):
         config.output_dir = "/media/omnisky/sdb/grade2020/cairui/Dawnet/checkpoints"
         config.random_delay = 0.0
         config.experiment_id = config_dict.placeholder(str)
-        #config.experiment_id = '39c03b97090945cf8e3da59315334a8d'
+        #config.experiment_id = 'dc0672e41ee748929680668edc9da8b6'
         config.anonymous = config_dict.placeholder(str)
         config.notes = config_dict.placeholder(str)
         config.entity = config_dict.placeholder(str)
@@ -206,14 +206,28 @@ def load_appendix_data(data_path, mode):
             r.append(r_id[rel])
             t.append(e_id[tail])
     triples = [h, r, t]
-    with open(os.path.join(data_path, 'MultiModalInfo.pkl'), 'rb') as f:
+    with open(os.path.join(data_path, 'MultiModalInfo_zsl.pkl'), 'rb') as f:
         #print(f'Loading base dataset from {f.name}')
         mm_info = pickle.load(f)
 
-    with open(os.path.join(data_path, 'rel_descriptions_zsl'), 'r') as fin:
+    # with open(os.path.join(data_path, 'detailed_relation_description.txt'), 'r') as fin:
+    #     #print(f'Loading relation description from {fin.name}')
+    #     rel_des = []
+    #     lines = fin.readlines()
+    #     line_num = (lines.__len__() + 1 ) // 5
+    #     for num in range(line_num):
+    #         rela = lines[5 * num][10:-1]
+    #         des = lines[5 * num + 3][13:-1]
+    #         rel_des.append(rela + des)
+    with open(os.path.join(data_path, 'rel_description_zsl'), 'r') as fin:
         #print(f'Loading relation description from {fin.name}')
-        rel_des_file = fin.readlines()
-    return triples, mm_info, rel_des_file, e_id, r_id
+        rel_des = []
+        for line in fin.readlines():
+            if line[-1] == '\n':
+                rel_des.append(line[:-1])
+            else:
+                rel_des.append(line)
+    return triples, mm_info, rel_des, e_id, r_id
 
 def set_random_seed(seed):
     torch.manual_seed(seed)
