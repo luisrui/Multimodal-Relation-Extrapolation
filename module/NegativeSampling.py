@@ -53,8 +53,6 @@ class NegativeSampling(BaseModule):
 		#self.rel_embedding = nn.Embedding(self.model.num_relations, self.model.dim)
 		#self.ent_embedding = nn.Embedding(self.model.num_nodes, self.model.dim)
 		self.feature_extractor = nn.Linear(self.model.dim * 2, self.model.dim)
-		# if args.discretized_image:
-		# 	self.vq_model = MaskGitVQGAN.from_pretrained("/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/maskgit")
 		if whole_triples is not None:
 			h, r, t = whole_triples
 			self.__count_htr(h, r, t)

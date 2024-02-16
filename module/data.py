@@ -54,7 +54,7 @@ class MMKGDataset(torch_geometric.data.Dataset):
         config.text_only = False
         config.struct_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = "   "### load your own downloaded bert tokenizer path here
         config.tokenizer_max_length = 64
         config.unpaired_tokenizer_max_length = 320
         
@@ -351,7 +351,7 @@ class MultiModalKnowledgeGraphDataset(torch.utils.data.Dataset):
         config.text_only = False
         config.struct_only = False
         config.tokenize = True
-        config.tokenizer = "/media/omnisky/sdb/grade2020/cairui/Dawnet/module/pretrain_models/bert-base-uncased-tokenizer"
+        config.tokenizer = " " ### load your own downloaded bert tokenizer path here
         config.tokenizer_max_length = 64
         config.unpaired_tokenizer_max_length = 320
         

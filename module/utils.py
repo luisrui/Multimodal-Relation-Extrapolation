@@ -30,7 +30,7 @@ class WandBLogger(object):
         config.online = True
         config.prefix = "M3AE"
         config.project = "m3ae"
-        config.output_dir = "/media/omnisky/sdb/grade2020/cairui/Dawnet/checkpoints"
+        config.output_dir = " "### load your own checkpoints file path here
         config.random_delay = 0.0
         config.experiment_id = config_dict.placeholder(str)
         #config.experiment_id = 'dc0672e41ee748929680668edc9da8b6'
